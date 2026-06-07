@@ -188,6 +188,12 @@ async function connectCDP() {
   });
 
   cdpClient = client;
+
+  // Force AG's page to think it's focused even when in background.
+  // Without this, the browser defers rendering and React batches updates,
+  // causing expanded sections to appear empty until the user focuses the window.
+  try { await client.Emulation.setFocusEmulationEnabled({ enabled: true }); } catch {}
+
   log('CDP', `Connected. ${cdpContexts.length} execution context(s) available.`);
   broadcastStatus();
   return client;
@@ -231,7 +237,7 @@ async function evaluateInBrowser(expression, opts = {}) {
       });
 
       if (result.exceptionDetails) {
-        console.debug('[CDP] Eval exception in context', ctx.id, result.exceptionDetails.text);
+        console.debug('[CDP] Eval exception in context', ctx.id, result.exceptionDetails.text, JSON.stringify(result.exceptionDetails.exception || {}).substring(0, 200));
         continue;
       }
 
@@ -252,10 +258,42 @@ async function evaluateInBrowser(expression, opts = {}) {
 // ─────────────────────────────────────────────
 
 // The capture script runs IN the Antigravity browser context.
-// Pattern: mark → clone → unmark original → process clone → return
+// Captures: chat container (with cleanup) + left sidebar + right sidebar (raw clones)
+// Tags interactive elements across all three areas for click proxying
+// Click IDs are prefixed: chat:N, left:N, right:N
 const CAPTURE_SCRIPT = `
 (async () => {
-  // 1. Find the chat container
+  // -- Helper: tag interactive elements for click proxying --
+  function tagInteractives(root, prefix, skipVisibilityCheck) {
+    let idx = 0;
+    const tagged = [];
+    root.querySelectorAll('button, a, [role="button"]').forEach(el => {
+      if (skipVisibilityCheck || el.offsetParent !== null) {
+        el.setAttribute('data-ag-click-id', prefix + ':' + idx);
+        el.setAttribute('data-ag-click-label', (el.textContent || '').trim().substring(0, 50));
+        idx++;
+        tagged.push(el);
+      }
+    });
+    root.querySelectorAll('[class*="cursor-pointer"]').forEach(el => {
+      if ((skipVisibilityCheck || el.offsetParent !== null) && !el.hasAttribute('data-ag-click-id')) {
+        el.setAttribute('data-ag-click-id', prefix + ':' + idx);
+        el.setAttribute('data-ag-click-label', (el.textContent || '').trim().substring(0, 50));
+        idx++;
+        tagged.push(el);
+      }
+    });
+    return tagged;
+  }
+
+  function untagAll(tagged) {
+    tagged.forEach(el => {
+      el.removeAttribute('data-ag-click-id');
+      el.removeAttribute('data-ag-click-label');
+    });
+  }
+
+  // -- 1. Find the chat container --
   const container =
     document.querySelector('.scrollbar-hide[class*="overflow-y-auto"]') ||
     document.querySelector('[data-testid="conversation-view"]') ||
@@ -265,20 +303,20 @@ const CAPTURE_SCRIPT = `
 
   if (!container) return null;
 
-  // 2. Detect if agent is generating (stop button visible)
+  // -- 2. Detect if agent is generating --
   const stopBtn =
     document.querySelector('[data-tooltip-id="input-send-button-cancel-tooltip"]') ||
     document.querySelector('button svg.lucide-square')?.closest('button');
   const agentRunning = !!(stopBtn && stopBtn.offsetParent !== null);
 
-  // 3. Scroll info
+  // -- 3. Scroll info --
   const scrollInfo = {
     scrollTop: container.scrollTop,
     scrollHeight: container.scrollHeight,
     clientHeight: container.clientHeight,
   };
 
-  // 4. Mark special positioned elements on the ORIGINAL dom
+  // -- 4. Mark positioned elements + tag chat interactives --
   const marked = [];
   container.querySelectorAll('*').forEach(el => {
     try {
@@ -293,66 +331,48 @@ const CAPTURE_SCRIPT = `
       }
     } catch {}
   });
+  const chatTagged = tagInteractives(container, 'chat');
 
-  // 5. Deep clone
+  // -- 5. Clone chat container --
   const clone = container.cloneNode(true);
 
-  // 6. Unmark original DOM immediately
+  // -- 6. Unmark originals --
   marked.forEach(el => {
     el.removeAttribute('data-ag-remove');
     el.removeAttribute('data-ag-sticky');
   });
+  untagAll(chatTagged);
 
-  // 7. Clean the clone — remove editor/input area
-  const editorSels = [
-    '[contenteditable="true"]',
-    '[data-lexical-editor]',
-    '[role="textbox"]',
-    'form',
-  ];
-  editorSels.forEach(sel => {
+  // -- 7. Clean clone: remove editor/input --
+  ['[contenteditable="true"]', '[data-lexical-editor]', '[role="textbox"]', 'form'].forEach(sel => {
     clone.querySelectorAll(sel).forEach(el => {
-      // Walk up to a direct child of clone and remove
       let target = el;
       while (target.parentElement && target.parentElement !== clone) {
-        // Protect action bars (Allow/Deny/Review buttons)
-        const hasActionBtn = target.parentElement.querySelector(
-          'button, [role="button"]'
-        );
-        const actionText = hasActionBtn?.textContent?.trim() || '';
-        if (/^(Allow|Deny|Review|Run|Confirm|Accept|Reject)/i.test(actionText)) {
-          // Don't walk up past action bars
-          break;
-        }
+        const btn = target.parentElement.querySelector('button, [role="button"]');
+        if (/^(Allow|Deny|Review|Run|Confirm|Accept|Reject)/i.test(btn?.textContent?.trim() || '')) break;
         target = target.parentElement;
       }
-      if (target.parentElement === clone) {
-        target.remove();
-      } else {
-        el.remove();
-      }
+      if (target.parentElement === clone) target.remove();
+      else el.remove();
     });
   });
 
-  // 8. Remove fixed/absolute overlays (but protect action bars)
+  // -- 8. Remove fixed/absolute overlays (protect action bars) --
   clone.querySelectorAll('[data-ag-remove]').forEach(el => {
-    const btns = el.querySelectorAll('button, [role="button"]');
     let isActionBar = false;
-    btns.forEach(b => {
-      if (/^(Allow|Deny|Review|Run|Confirm)/i.test(b.textContent?.trim())) {
-        isActionBar = true;
-      }
+    el.querySelectorAll('button, [role="button"]').forEach(b => {
+      if (/^(Allow|Deny|Review|Run|Confirm)/i.test(b.textContent?.trim())) isActionBar = true;
     });
     if (!isActionBar) el.remove();
     else el.removeAttribute('data-ag-remove');
   });
 
-  // 9. Force solid backgrounds on sticky elements
+  // -- 9. Force sticky backgrounds --
   clone.querySelectorAll('[data-ag-sticky]').forEach(el => {
-    el.style.backgroundColor = '#0f172a';
+    el.style.backgroundColor = '#101010';
   });
 
-  // 10. Fix inline div-inside-span/p (AG nests block inside inline)
+  // -- 10. Fix inline div-inside-span/p --
   clone.querySelectorAll('span > div, p > div').forEach(div => {
     const span = document.createElement('span');
     span.innerHTML = div.innerHTML;
@@ -364,12 +384,10 @@ const CAPTURE_SCRIPT = `
     div.replaceWith(span);
   });
 
-  // 11. Force paragraph display block (AG2.0 uses flex on .animate-markdown)
-  clone.querySelectorAll('p').forEach(p => {
-    p.style.display = 'block';
-  });
+  // -- 11. Force paragraph display block --
+  clone.querySelectorAll('p').forEach(p => { p.style.display = 'block'; });
 
-  // 12. Get HTML and strip broken [object Object] class names (streaming bug)
+  // -- 12. Get chat HTML + strip [object Object] --
   let html = clone.innerHTML;
   html = html.replace(/class="([^"]*)"/g, (match, classes) => {
     if (!classes.includes('[object Object]')) return match;
@@ -377,19 +395,108 @@ const CAPTURE_SCRIPT = `
     return 'class="' + cleaned + '"';
   });
 
-  // 13. Collect CSS from all accessible stylesheets
+  // -- 13. Collect CSS --
   let css = '';
   for (const sheet of document.styleSheets) {
     try {
-      for (const rule of sheet.cssRules) {
-        css += rule.cssText + '\\n';
-      }
+      for (const rule of sheet.cssRules) { css += rule.cssText + '\\n'; }
     } catch {}
   }
 
-  return { html, css, agentRunning, scrollInfo };
+  // -- 13b. Extract theme CSS variables from DOM --
+  // AG defines critical vars (--foreground, --background, etc.) on DOM elements,
+  // not in stylesheets. Extract them so they resolve in our context.
+  const themeVars = [
+    'foreground', 'background', 'border', 'muted', 'muted-foreground',
+    'primary', 'primary-foreground', 'secondary', 'secondary-foreground',
+    'accent', 'accent-foreground', 'card', 'card-foreground', 'card-border',
+    'popover', 'popover-foreground', 'destructive', 'destructive-foreground',
+    'input', 'ring', 'code-background', 'code-foreground',
+    'sidebar', 'sidebar-background', 'sidebar-foreground', 'sidebar-border',
+    'sidebar-muted', 'sidebar-muted-foreground', 'sidebar-accent',
+    'sidebar-secondary', 'sidebar-ring',
+  ];
+  const rootStyle = getComputedStyle(document.documentElement);
+  const bodyStyle = document.body ? getComputedStyle(document.body) : null;
+  const themeRules = [];
+  for (const v of themeVars) {
+    const val = rootStyle.getPropertyValue('--' + v).trim()
+              || (bodyStyle ? bodyStyle.getPropertyValue('--' + v).trim() : '');
+    if (val) themeRules.push('--' + v + ':' + val);
+  }
+  if (themeRules.length > 0) {
+    css = ':root{' + themeRules.join(';') + '}\\n' + css;
+  }
+
+  // -- 14. Capture LEFT sidebar (bg-sidebar) --
+  let leftSidebarHtml = null;
+  try {
+    const leftRoot = document.querySelector('[class*="bg-sidebar"]');
+    if (leftRoot && leftRoot.offsetParent !== null) {
+      const leftTagged = tagInteractives(leftRoot, 'left');
+      const leftClone = leftRoot.cloneNode(true);
+      untagAll(leftTagged);
+      leftSidebarHtml = leftClone.outerHTML;
+    }
+  } catch (e) {
+    console.debug('[AG2R] Left sidebar capture error:', e.message);
+  }
+
+  // -- 15. Capture RIGHT sidebar (Overview/Review panel) --
+  // Use stable anchors: data-tab-id, close-aux-pane button
+  let rightSidebarHtml = null;
+  try {
+    let sidebarRoot = null;
+
+    // Strategy 1: Find via tab-id buttons (always present in the panel)
+    const tabBtn = document.querySelector('[data-tab-id="overview"], [data-tab-id="review"]');
+    if (tabBtn) {
+      // Walk up to find the flex-col root container
+      let el = tabBtn;
+      for (let i = 0; i < 10 && el; i++) {
+        el = el.parentElement;
+        const cls = el?.className?.toString?.() || '';
+        if (cls.includes('flex') && cls.includes('flex-col') && el.children.length >= 2) {
+          const rect = el.getBoundingClientRect();
+          if (rect.width > 100 && rect.height > 200) {
+            sidebarRoot = el;
+            break;
+          }
+        }
+      }
+    }
+
+    // Strategy 2: Find via close-aux-pane button
+    if (!sidebarRoot) {
+      const closeBtn = document.querySelector('[data-testid="close-aux-pane"]');
+      if (closeBtn) {
+        let el = closeBtn;
+        for (let i = 0; i < 10 && el; i++) {
+          el = el.parentElement;
+          const cls = el?.className?.toString?.() || '';
+          if (cls.includes('flex') && cls.includes('flex-col') && el.children.length >= 2) {
+            sidebarRoot = el;
+            break;
+          }
+        }
+      }
+    }
+
+    if (sidebarRoot) {
+      const rightTagged = tagInteractives(sidebarRoot, 'right', true);
+      const rightClone = sidebarRoot.cloneNode(true);
+      untagAll(rightTagged);
+      rightSidebarHtml = rightClone.outerHTML;
+    }
+  } catch (e) {
+    console.debug('[AG2R] Right sidebar capture error:', e.message);
+  }
+
+  return { html, css, agentRunning, scrollInfo, leftSidebarHtml, rightSidebarHtml };
 })()
 `;
+
+
 
 async function captureSnapshot() {
   try {
@@ -541,7 +648,11 @@ function startPolling() {
       const snapshot = await captureSnapshot();
 
       if (snapshot) {
-        const hash = hashString(snapshot.html);
+        const hash = hashString(
+          snapshot.html +
+          (snapshot.leftSidebarHtml || '') +
+          (snapshot.rightSidebarHtml || '')
+        );
 
         // Only broadcast and update cache when content actually changes
         if (hash !== lastSnapshotHash) {
@@ -707,7 +818,101 @@ app.get('/snapshot', (req, res) => {
     hash: cachedSnapshot.hash,
     agentRunning: cachedSnapshot.agentRunning,
     scrollInfo: cachedSnapshot.scrollInfo,
+    leftSidebarHtml: cachedSnapshot.leftSidebarHtml || null,
+    rightSidebarHtml: cachedSnapshot.rightSidebarHtml || null,
   });
+});
+
+// --- Click Proxy (forward clicks to real AG DOM) ---
+// Click IDs are prefixed: chat:N, left:N, right:N
+app.post('/click', async (req, res) => {
+  const { clickId, label } = req.body;
+  log('Click', `Proxying click id=${clickId} label="${label}"`);
+
+  if (!clickId && clickId !== 0) {
+    return res.status(400).json({ error: 'clickId is required' });
+  }
+
+  if (!cdpClient) {
+    return res.status(503).json({ error: 'CDP not connected' });
+  }
+
+  try {
+    const clickScript = `
+    (async () => {
+      const clickId = ${JSON.stringify(String(clickId))};
+      const expectedLabel = ${JSON.stringify(label || '')};
+
+      // Parse prefix:index
+      const colonIdx = clickId.indexOf(':');
+      if (colonIdx === -1) return { ok: false, reason: 'invalid_click_id' };
+      const source = clickId.substring(0, colonIdx);
+      const idx = parseInt(clickId.substring(colonIdx + 1), 10);
+
+      // Find the root element based on source
+      let root = null;
+      if (source === 'chat') {
+        root =
+          document.querySelector('.scrollbar-hide[class*="overflow-y-auto"]') ||
+          document.querySelector('[data-testid="conversation-view"]') ||
+          document.getElementById('conversation') ||
+          document.getElementById('chat') ||
+          document.getElementById('cascade');
+      } else if (source === 'left') {
+        root = document.querySelector('[class*="bg-sidebar"]');
+      } else if (source === 'right') {
+        // Anchor-based: find via tab-id buttons or close-aux-pane
+        const tabBtn = document.querySelector('[data-tab-id="overview"], [data-tab-id="review"]');
+        const anchor = tabBtn || document.querySelector('[data-testid="close-aux-pane"]');
+        if (anchor) {
+          let el = anchor;
+          for (let i = 0; i < 10 && el; i++) {
+            el = el.parentElement;
+            const cls = el?.className?.toString?.() || '';
+            if (cls.includes('flex') && cls.includes('flex-col') && el.children.length >= 2) {
+              root = el;
+              break;
+            }
+          }
+        }
+      }
+
+      if (!root) return { ok: false, reason: 'no_root_for_' + source };
+
+      // Build the same interactive element list as capture
+      const skipVis = (source === 'right'); // Right sidebar may be hidden on desktop
+      const visible = [];
+      root.querySelectorAll('button, a, [role="button"]').forEach(el => {
+        if (skipVis || el.offsetParent !== null) visible.push(el);
+      });
+      root.querySelectorAll('[class*="cursor-pointer"]').forEach(el => {
+        if ((skipVis || el.offsetParent !== null) && !visible.includes(el)) visible.push(el);
+      });
+
+      if (idx < 0 || idx >= visible.length) {
+        return { ok: false, reason: 'index_out_of_range', total: visible.length };
+      }
+
+      const target = visible[idx];
+      const actualLabel = (target.textContent || '').trim().substring(0, 50);
+
+      // Validate label matches (if provided) to prevent stale clicks
+      if (expectedLabel && actualLabel !== expectedLabel) {
+        return { ok: false, reason: 'label_mismatch', expected: expectedLabel, actual: actualLabel };
+      }
+
+      target.click();
+      return { ok: true, label: actualLabel, source };
+    })()
+    `;
+
+    const result = await evaluateInBrowser(clickScript);
+    log('Click', `Result: ${JSON.stringify(result)}`);
+    res.json(result || { ok: false, reason: 'null_result' });
+  } catch (e) {
+    log('Click', `Error: ${e.message}`);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // --- Send Message ---
@@ -754,6 +959,191 @@ app.post('/stop', async (req, res) => {
     const result = await stopGeneration();
     res.json(result || { ok: false });
   } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// --- Sidebar Discovery (temporary diagnostic) ---
+const DISCOVER_SCRIPT = `
+(async () => {
+  const results = {
+    // Search for elements containing sidebar-related text
+    textMatches: [],
+    // Search for aside elements
+    asides: [],
+    // Search for panel/sidebar class/id patterns
+    panels: [],
+    // Search for tab-like structures
+    tabs: [],
+    // Search for elements near the right edge of the viewport
+    rightEdgeElements: [],
+    // The chat container we already know about
+    chatContainer: null,
+    // All top-level structural elements
+    topLevel: [],
+  };
+
+  // 1. Find elements with sidebar-related text
+  const textTargets = ['Overview', 'Review', 'Review Changes', 'No changes to review'];
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const text = walker.currentNode.textContent.trim();
+    for (const target of textTargets) {
+      if (text === target || text.includes(target)) {
+        const el = walker.currentNode.parentElement;
+        if (el) {
+          results.textMatches.push({
+            text: target,
+            tag: el.tagName,
+            id: el.id || null,
+            className: el.className?.toString?.()?.substring(0, 200) || null,
+            role: el.getAttribute('role'),
+            parentTag: el.parentElement?.tagName,
+            parentId: el.parentElement?.id || null,
+            parentClass: el.parentElement?.className?.toString?.()?.substring(0, 200) || null,
+            // Walk up 5 levels to find structural ancestor
+            ancestors: (() => {
+              const anc = [];
+              let p = el;
+              for (let i = 0; i < 5 && p; i++) {
+                anc.push({
+                  tag: p.tagName,
+                  id: p.id || null,
+                  class: p.className?.toString?.()?.substring(0, 100) || null,
+                  role: p.getAttribute?.('role') || null,
+                  'data-testid': p.getAttribute?.('data-testid') || null,
+                });
+                p = p.parentElement;
+              }
+              return anc;
+            })(),
+          });
+        }
+      }
+    }
+  }
+
+  // 2. Find aside elements
+  document.querySelectorAll('aside').forEach(el => {
+    results.asides.push({
+      id: el.id || null,
+      className: el.className?.toString?.()?.substring(0, 200) || null,
+      role: el.getAttribute('role'),
+      childCount: el.children.length,
+      textPreview: el.textContent?.substring(0, 100)?.trim(),
+      rect: el.getBoundingClientRect(),
+    });
+  });
+
+  // 3. Find panel/sidebar patterns
+  const panelSelectors = [
+    '[class*="sidebar" i]', '[class*="panel" i]', '[class*="drawer" i]',
+    '[class*="aside" i]', '[class*="review" i]', '[class*="overview" i]',
+    '[id*="sidebar" i]', '[id*="panel" i]', '[id*="drawer" i]',
+    '[id*="review" i]', '[id*="overview" i]',
+    '[data-testid*="sidebar" i]', '[data-testid*="panel" i]',
+    '[data-testid*="review" i]', '[data-testid*="overview" i]',
+    '[role="complementary"]', '[role="tabpanel"]',
+  ];
+  for (const sel of panelSelectors) {
+    try {
+      document.querySelectorAll(sel).forEach(el => {
+        results.panels.push({
+          selector: sel,
+          tag: el.tagName,
+          id: el.id || null,
+          className: el.className?.toString?.()?.substring(0, 200) || null,
+          role: el.getAttribute('role'),
+          'data-testid': el.getAttribute('data-testid'),
+          childCount: el.children.length,
+          textPreview: el.textContent?.substring(0, 100)?.trim(),
+          rect: el.getBoundingClientRect(),
+          visible: el.offsetParent !== null,
+        });
+      });
+    } catch {}
+  }
+
+  // 4. Find tab structures
+  document.querySelectorAll('[role="tab"], [role="tablist"], [role="tabpanel"]').forEach(el => {
+    results.tabs.push({
+      tag: el.tagName,
+      role: el.getAttribute('role'),
+      id: el.id || null,
+      className: el.className?.toString?.()?.substring(0, 200) || null,
+      'aria-selected': el.getAttribute('aria-selected'),
+      'aria-controls': el.getAttribute('aria-controls'),
+      textContent: el.textContent?.substring(0, 50)?.trim(),
+      rect: el.getBoundingClientRect(),
+    });
+  });
+
+  // 5. Find elements positioned on the right side of the viewport
+  const vw = window.innerWidth;
+  document.querySelectorAll('div, section, aside, nav').forEach(el => {
+    const rect = el.getBoundingClientRect();
+    if (rect.left > vw * 0.5 && rect.width > 100 && rect.height > 200) {
+      results.rightEdgeElements.push({
+        tag: el.tagName,
+        id: el.id || null,
+        className: el.className?.toString?.()?.substring(0, 150) || null,
+        role: el.getAttribute('role'),
+        'data-testid': el.getAttribute('data-testid'),
+        rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+        childCount: el.children.length,
+        textPreview: el.textContent?.substring(0, 80)?.trim(),
+      });
+    }
+  });
+
+  // 6. Chat container (for reference)
+  const container =
+    document.querySelector('.scrollbar-hide[class*="overflow-y-auto"]') ||
+    document.querySelector('[data-testid="conversation-view"]') ||
+    document.getElementById('conversation');
+  if (container) {
+    results.chatContainer = {
+      tag: container.tagName,
+      id: container.id || null,
+      className: container.className?.toString?.()?.substring(0, 200) || null,
+      rect: container.getBoundingClientRect(),
+      // Sibling info — sidebar is likely a sibling
+      siblings: Array.from(container.parentElement?.children || []).map(s => ({
+        tag: s.tagName,
+        id: s.id || null,
+        className: s.className?.toString?.()?.substring(0, 100) || null,
+        role: s.getAttribute('role'),
+        rect: s.getBoundingClientRect(),
+      })),
+    };
+  }
+
+  // 7. Top-level children of body
+  Array.from(document.body.children).forEach(el => {
+    results.topLevel.push({
+      tag: el.tagName,
+      id: el.id || null,
+      className: el.className?.toString?.()?.substring(0, 150) || null,
+      childCount: el.children.length,
+      rect: el.getBoundingClientRect(),
+    });
+  });
+
+  return results;
+})()
+`;
+
+app.get('/discover', async (req, res) => {
+  if (!cdpClient) {
+    return res.status(503).json({ error: 'CDP not connected' });
+  }
+
+  try {
+    const result = await evaluateInBrowser(DISCOVER_SCRIPT);
+    log('Discovery', JSON.stringify(result, null, 2));
+    res.json(result);
+  } catch (e) {
+    log('Discovery', `Error: ${e.message}`);
     res.status(500).json({ error: e.message });
   }
 });

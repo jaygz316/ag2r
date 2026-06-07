@@ -1,26 +1,30 @@
 /* ═══════════════════════════════════════════════
    AG2R — Mobile-First Styles
-   Mimics Antigravity 2.0 dark theme
+   Matches Antigravity 2.0 dark theme
    ═══════════════════════════════════════════════ */
 
-/* ── Design Tokens ── */
+/* ── Design Tokens (from AG's resolved theme) ── */
 :root {
-  --bg-app: #090e17;
-  --bg-panel: #111827;
-  --bg-surface: #1e293b;
-  --bg-hover: #253247;
-  --bg-input: #1a2332;
+  /* Core — matches AG's body background: rgb(14, 19, 24) */
+  --bg-app: #0e1318;
+  --bg-panel: #161616;      /* AG --sidebar / --muted */
+  --bg-surface: #1c1c1c;    /* AG --card / --sidebar-muted */
+  --bg-hover: #2d2d2d;      /* AG --secondary */
+  --bg-input: #1c1c1c;      /* AG --card */
 
-  --text-primary: #f1f5f9;
-  --text-secondary: #94a3b8;
-  --text-muted: #64748b;
+  /* Text — matches AG's text color scale */
+  --text-primary: #cccccc;   /* AG --foreground */
+  --text-secondary: #9d9d9d; /* AG --secondary-foreground */
+  --text-muted: #6e6e6e;     /* AG --muted-foreground */
 
-  --accent: #6366f1;
-  --accent-hover: #818cf8;
-  --accent-dim: rgba(99, 102, 241, 0.15);
+  /* Accent — AG's --primary */
+  --accent: #007acc;
+  --accent-hover: #1a8ad4;
+  --accent-dim: rgba(0, 122, 204, 0.15);
 
-  --border: #1e293b;
-  --border-subtle: rgba(255, 255, 255, 0.06);
+  /* Borders — AG's --border / --card-border */
+  --border: #252525;          /* AG --card-border */
+  --border-subtle: rgba(255, 255, 255, 0.05); /* AG --border */
 
   --red: #ef4444;
   --green: #22c55e;
@@ -59,7 +63,7 @@ body {
   font-size: 15px;
   line-height: 1.5;
   color: var(--text-primary);
-  background: var(--bg-app);
+  background: var(--bg-app) !important;
   overflow: hidden;
   overscroll-behavior: none;
   -webkit-tap-highlight-color: transparent;
@@ -88,7 +92,7 @@ body {
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
-  z-index: 100;
+  z-index: 300;
 }
 
 .header-title {
@@ -147,13 +151,14 @@ body {
   50% { opacity: 0.3; }
 }
 
-/* ── Sidebar ── */
-.sidebar {
+/* ── Left Sidebar (AG captured content) ── */
+.left-sidebar {
   position: fixed;
-  top: 0;
+  top: calc(var(--header-height) + var(--safe-top));
   left: 0;
-  width: 280px;
-  height: 100dvh;
+  width: 85vw;
+  max-width: 320px;
+  height: calc(100dvh - var(--header-height) - var(--safe-top));
   background: var(--bg-panel);
   border-right: 1px solid var(--border-subtle);
   z-index: 200;
@@ -161,45 +166,57 @@ body {
   transition: transform 0.25s ease;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
-.sidebar.open {
+.left-sidebar.open {
   transform: translateX(0);
 }
 
-.sidebar-header {
+/* ── Right Sidebar (AG captured review panel) ── */
+.right-sidebar {
+  position: fixed;
+  top: calc(var(--header-height) + var(--safe-top));
+  right: 0;
+  width: 100vw;
+  height: calc(100dvh - var(--header-height) - var(--safe-top));
+  background: var(--bg-panel);
+  border-left: 1px solid var(--border-subtle);
+  z-index: 200;
+  transform: translateX(100%);
+  transition: transform 0.25s ease;
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  padding-top: max(12px, var(--safe-top));
-  border-bottom: 1px solid var(--border-subtle);
+  flex-direction: column;
+  overflow: hidden;
 }
 
-.sidebar-header h2 {
-  font-size: 15px;
-  font-weight: 600;
+.right-sidebar.open {
+  transform: translateX(0);
+}
+
+/* ── Shared sidebar styles ── */
+.sidebar-fill {
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  /* Force visible content — AG's CSS vars may not resolve outside their app context */
+  background: var(--bg-panel);
   color: var(--text-primary);
 }
 
-.sidebar-content {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px;
-}
-
-.sidebar-placeholder {
-  color: var(--text-muted);
-  font-size: 13px;
-  text-align: center;
-  padding: 40px 16px;
+/* Ensure captured AG content inherits visible colors */
+.sidebar-fill > * {
+  color: inherit;
 }
 
 .sidebar-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.5);
   z-index: 199;
+  background: rgba(0, 0, 0, 0.5);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.25s ease;
@@ -209,6 +226,95 @@ body {
   opacity: 1;
   pointer-events: auto;
 }
+
+/* ── Review Toggle Badge ── */
+.review-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 4px rgba(99, 102, 241, 0.6);
+}
+
+.review-badge.hidden {
+  display: none;
+}
+
+/* ── Interactive Elements in Captured Content ── */
+[data-ag-click-id] {
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+[data-ag-click-id]:active {
+  opacity: 0.7;
+}
+
+[data-ag-click-id].ag-clicking {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* ── Captured Content Overrides (hide dead AG chrome) ── */
+
+/* Hide AG's close/toggle buttons — we have our own in the header */
+[data-testid="sidebar-toggle"],
+[data-testid="close-aux-pane"] {
+  display: none !important;
+}
+
+/* Fix +NNN more lines buttons — the horizontal rule (collapsed-line indicator)
+   passes through the button text. Pull button above the line with z-index
+   and ensure opaque background so the line doesn't show through.
+   AG uses bg-muted which may not resolve in our captured CSS context. */
+.sidebar-fill button.bg-muted {
+  position: relative;
+  z-index: 1;
+  background-color: var(--color-bg-muted, #161b22) !important;
+}
+
+/* ── Collapsed Section Fix (Worked for / Thought for) ── */
+/* AG uses mask-image gradients on thinking content for a fade effect.
+   This makes text invisible in our context. Remove masks and height caps
+   so expanded content is fully visible. */
+#chat-content [style*="mask-image"] {
+  -webkit-mask-image: none !important;
+  mask-image: none !important;
+}
+
+#chat-content [style*="max-height: 200px"] {
+  max-height: none !important;
+}
+
+/* Container query height (100cqh) resolves to 0 without query context */
+#chat-content [style*="100cqh"] {
+  min-height: auto !important;
+}
+
+/* ── Streaming Span Fix ── */
+/* During streaming, AG wraps each word in <span> inside animate-markdown
+   with display:inline-flex. This smushes words together and stacks inline
+   code vertically. Override to plain inline display. */
+.animate-markdown {
+  display: inline !important;
+  align-items: initial !important;
+  vertical-align: initial !important;
+  gap: 0 !important;
+}
+
+/* Force <p> parents back to block (they get broken by [object Object] class) */
+#chat-content p[node] {
+  display: block !important;
+}
+
+/* Ensure word-spans flow inline with natural spacing */
+.animate-markdown > span {
+  display: inline !important;
+}
+
 
 /* ── Chat Area ── */
 .chat-area {
@@ -506,4 +612,6 @@ body {
 .mobile-copy-btn.copied {
   color: var(--green);
 }
+
+
 
