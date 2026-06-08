@@ -1199,6 +1199,42 @@ app.post('/click', async (req, res) => {
     const result = await evaluateInBrowser(clickScript);
     log('Click', `Result: ${JSON.stringify(result)}`);
     res.json(result || { ok: false, reason: 'null_result' });
+
+    // After portal-opening clicks, schedule rapid re-captures to catch the
+    // dialog/dropdown DOM appearing (React render takes 50-200ms)
+    if (result?.ok) {
+      const source = result.source || '';
+      if (['env', 'dropdown', 'dialog', 'left'].includes(source)) {
+        const burstCapture = async (delay) => {
+          await new Promise(r => setTimeout(r, delay));
+          try {
+            const snapshot = await captureSnapshot();
+            if (snapshot) {
+              const hash = hashString(
+                snapshot.html +
+                (snapshot.leftSidebarHtml || '') +
+                (snapshot.rightSidebarHtml || '') +
+                (snapshot.dropdownHtml || '') +
+                (snapshot.dialogHtml || '') +
+                (snapshot.permissionHtml || '')
+              );
+              if (hash !== lastSnapshotHash) {
+                cachedSnapshot = snapshot;
+                cachedSnapshot.hash = hash;
+                lastSnapshotHash = hash;
+                broadcast({ type: 'snapshot', hash, agentRunning: snapshot.agentRunning, timestamp: new Date().toISOString() });
+              }
+            }
+          } catch (e) {
+            console.debug('[BurstCapture] Error:', e.message);
+          }
+        };
+        // Fire 3 rapid captures at 150ms, 400ms, 700ms
+        burstCapture(150);
+        burstCapture(400);
+        burstCapture(700);
+      }
+    }
   } catch (e) {
     log('Click', `Error: ${e.message}`);
     res.status(500).json({ error: e.message });
