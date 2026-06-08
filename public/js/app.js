@@ -284,6 +284,7 @@ async function loadSnapshot() {
         let buttonsHtml = '';
         dialogBtns.forEach(btn => {
           const text = btn.textContent.trim();
+          if (!text) return; // Skip empty buttons (e.g., close X icon)
           const id = btn.dataset.agClickId;
           const label = btn.dataset.agClickLabel || text;
           const isDestructive = text.toLowerCase().includes('delete');
