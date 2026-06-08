@@ -542,6 +542,14 @@ const CAPTURE_SCRIPT = `
         untagAll(tagged);
         dialogHtml = clone.outerHTML;
       }
+
+      // Popover dialog (role="dialog" portal, e.g. environment selector, context menus)
+      if (!dialogHtml && child.getAttribute('role') === 'dialog') {
+        const tagged = tagInteractives(child, 'dialog', true, false);
+        const clone = child.cloneNode(true);
+        untagAll(tagged);
+        dialogHtml = clone.outerHTML;
+      }
     }
   } catch (e) {
     console.debug('[AG2R] Portal capture error:', e.message);
@@ -606,7 +614,27 @@ const CAPTURE_SCRIPT = `
     console.debug('[AG2R] Permission banner capture error:', e.message);
   }
 
-  return { html, css, agentRunning, scrollInfo, leftSidebarHtml, rightSidebarHtml, isNewSessionPage, dropdownHtml, dialogHtml, activeArtifactUri, activeFileUri, permissionHtml };
+  // -- 11. Extract environment/worktree and branch from new session bottom bar --
+  // The environment button (aria-label="Select Environment") shows "Local" or "New Worktree" or a worktree name.
+  // The branch button (aria-label="Select Default Branch") shows the branch name and only appears in worktree mode.
+  let environmentName = null;
+  let branchName = null;
+  try {
+    const envBtn = document.querySelector('[aria-label="Select Environment"]');
+    if (envBtn) {
+      const span = envBtn.querySelector('span');
+      environmentName = span ? span.textContent.trim() : (envBtn.textContent || '').trim();
+    }
+    const branchBtn = document.querySelector('[aria-label="Select Default Branch"]');
+    if (branchBtn) {
+      const span = branchBtn.querySelector('span');
+      branchName = span ? span.textContent.trim() : (branchBtn.textContent || '').trim();
+    }
+  } catch (e) {
+    console.debug('[AG2R] Environment/branch extraction error:', e.message);
+  }
+
+  return { html, css, agentRunning, scrollInfo, leftSidebarHtml, rightSidebarHtml, isNewSessionPage, dropdownHtml, dialogHtml, activeArtifactUri, activeFileUri, permissionHtml, environmentName, branchName };
 })()
 `;
 
@@ -949,7 +977,20 @@ app.get('/snapshot', (req, res) => {
     activeArtifactUri: cachedSnapshot.activeArtifactUri || null,
     activeFileUri: cachedSnapshot.activeFileUri || null,
     permissionHtml: cachedSnapshot.permissionHtml || null,
+    environmentName: cachedSnapshot.environmentName || null,
+    branchName: cachedSnapshot.branchName || null,
   });
+});
+
+// --- Dismiss Portal (close dropdowns/dialogs in AG via Escape key) ---
+app.post('/dismiss-portal', async (req, res) => {
+  try {
+    await evaluateInBrowser(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }))`);
+    res.json({ ok: true });
+  } catch (e) {
+    console.debug('[DismissPortal] Error:', e.message);
+    res.json({ ok: false, error: e.message });
+  }
 });
 
 // --- Click Proxy (forward clicks to real AG DOM) ---
@@ -1013,12 +1054,15 @@ app.post('/click', async (req, res) => {
           }
         }
       } else if (source === 'dialog') {
-        // Portal dialog: body > div.fixed.inset-0
+        // Portal dialog: body > div.fixed.inset-0 (modal) or body > div[role="dialog"] (popover)
         for (const child of document.body.children) {
           const cls = child.className || '';
           if (cls.includes('fixed') && cls.includes('inset-0')) {
             root = child;
             break;
+          }
+          if (!root && child.getAttribute('role') === 'dialog') {
+            root = child;
           }
         }
       } else if (source === 'perm') {
@@ -1044,6 +1088,22 @@ app.post('/click', async (req, res) => {
           return { ok: false, reason: 'perm_index_out_of_range', total: permEls.length };
         }
         return { ok: false, reason: 'no_permission_banner' };
+      } else if (source === 'env') {
+        // Environment/branch buttons on new session page bottom bar
+        const selectors = [
+          '[aria-label="Select Environment"]',   // env:0
+          '[aria-label="Select Default Branch"]', // env:1
+        ];
+        if (idx >= 0 && idx < selectors.length) {
+          const target = document.querySelector(selectors[idx]);
+          if (target) {
+            const actualLabel = (target.textContent || '').trim().substring(0, 50);
+            target.click();
+            return { ok: true, label: actualLabel, source: 'env' };
+          }
+          return { ok: false, reason: 'env_button_not_found', idx };
+        }
+        return { ok: false, reason: 'env_index_out_of_range' };
       }
 
       if (!root) return { ok: false, reason: 'no_root_for_' + source };

@@ -53,6 +53,8 @@ const commentSubmit = document.getElementById('comment-submit');
 const permissionOverlay = document.getElementById('permission-overlay');
 const permissionBackdrop = document.getElementById('permission-backdrop');
 const permissionContent = document.getElementById('permission-content');
+// Suppression: ignore stale dialog/dropdown snapshots for a short window after user dismisses
+let overlayDismissedAt = 0;
 
 // ─────────────────────────────────────────────
 // Fetch Wrapper (redirects to login on 401)
@@ -210,7 +212,7 @@ async function loadSnapshot() {
 
     // If this is the new session page, replace captured content with a functional input
     if (data.isNewSessionPage) {
-      renderNewSessionPage(chatContent, data.html);
+      renderNewSessionPage(chatContent, data);
     }
 
     // Add mobile copy buttons to code blocks
@@ -228,39 +230,39 @@ async function loadSnapshot() {
       addClickProxyHandlers(rightSidebarContent);
     }
 
-    // Render dropdown overlay if AG has a portal menu open
-    if (data.dropdownHtml) {
-      // Parse the dropdown to find the Delete button's click ID
+    // Render dropdown overlay if AG has a portal menu open (e.g., three-dots conversation menu)
+    // Skip if user just dismissed (prevents stale snapshots from re-opening)
+    const suppressOverlay = Date.now() - overlayDismissedAt < 2000;
+    if (data.dropdownHtml && !suppressOverlay) {
       const tempDiv = document.createElement('div');
       tempDiv.innerHTML = data.dropdownHtml;
-      const deleteBtn = Array.from(tempDiv.querySelectorAll('[data-ag-click-id]')).find(
-        el => el.textContent.trim() === 'Delete Conversation'
-      );
-      if (deleteBtn) {
-        const deleteClickId = deleteBtn.dataset.agClickId;
-        dropdownContent.innerHTML = `
-          <button class="destructive" data-ag-click-id="${deleteClickId}" data-ag-click-label="Delete Conversation">
-            <span class="material-symbols-rounded" style="font-size:20px">delete</span>
-            Delete Conversation
-          </button>
-        `;
+      const allBtns = tempDiv.querySelectorAll('[data-ag-click-id]');
+      if (allBtns.length > 0) {
+        let buttonsHtml = '';
+        allBtns.forEach(btn => {
+          const text = btn.textContent.trim();
+          const id = btn.dataset.agClickId;
+          const label = btn.dataset.agClickLabel || text;
+          const isDestructive = /delete|remove/i.test(text);
+          const cls = isDestructive ? 'destructive' : '';
+          buttonsHtml += `<button class="${cls}" data-ag-click-id="${id}" data-ag-click-label="${label}">${text}</button>`;
+        });
+        dropdownContent.innerHTML = buttonsHtml;
         addClickProxyHandlers(dropdownContent);
         dropdownOverlay.classList.remove('hidden');
       }
-    } else {
+    } else if (!data.dropdownHtml) {
       dropdownOverlay.classList.add('hidden');
     }
 
-    // Render dialog modal if AG has one open (e.g., delete confirmation)
-    if (data.dialogHtml) {
+    // Render dialog modal if AG has one open (e.g., delete confirmation, environment selector)
+    if (data.dialogHtml && !suppressOverlay) {
       const tempDiv = document.createElement('div');
       tempDiv.innerHTML = data.dialogHtml;
       // Extract buttons with click IDs
       const dialogBtns = tempDiv.querySelectorAll('[data-ag-click-id]');
       if (dialogBtns.length > 0) {
-        // Extract title and message from the dialog text
-        const allText = tempDiv.textContent.trim();
-        // Build our own confirmation modal
+        // Build buttons from tagged interactive elements
         let buttonsHtml = '';
         dialogBtns.forEach(btn => {
           const text = btn.textContent.trim();
@@ -271,11 +273,57 @@ async function loadSnapshot() {
           const cls = isDestructive ? 'destructive' : (isCancel ? 'cancel' : '');
           buttonsHtml += `<button class="${cls}" data-ag-click-id="${id}" data-ag-click-label="${label}">${text}</button>`;
         });
-        dropdownContent.innerHTML = `
-          <div class="dialog-title">Delete Conversation</div>
-          <div class="dialog-message">Are you sure? This action cannot be undone.</div>
-          <div class="dialog-buttons">${buttonsHtml}</div>
-        `;
+
+        // Extract title/message from the dialog — look for section headers or short text nodes
+        const root = tempDiv.firstElementChild;
+        const isPopover = root && root.getAttribute('role') === 'dialog';
+
+        if (isPopover) {
+          // Popover dialog (environment selector, context menus)
+          // Rebuild with section headers and separators from the original HTML
+          let popoverHtml = '';
+          const walker = root.querySelector('[class*="overflow-y-auto"]') || root;
+          for (const child of walker.children) {
+            // Separator
+            if (child.classList.contains('border-t') || child.tagName === 'HR') {
+              popoverHtml += '<div class="dropdown-separator"></div>';
+              continue;
+            }
+            // Section header (e.g. "Previous Worktrees")
+            const isHeader = child.classList.contains('text-muted-foreground') &&
+              child.classList.contains('text-xs') && !child.querySelector('button');
+            if (isHeader) {
+              popoverHtml += `<div class="dropdown-header">${child.textContent.trim()}</div>`;
+              continue;
+            }
+            // Tagged button inside this child
+            const tagged = child.querySelector('[data-ag-click-id]') || (child.dataset.agClickId ? child : null);
+            if (tagged) {
+              const text = tagged.textContent.trim();
+              const id = tagged.dataset.agClickId;
+              const label = tagged.dataset.agClickLabel || text;
+              const isDestructive = /delete|remove/i.test(text);
+              popoverHtml += `<button class="${isDestructive ? 'destructive' : ''}" data-ag-click-id="${id}" data-ag-click-label="${label}">${text}</button>`;
+            }
+          }
+          dropdownContent.innerHTML = popoverHtml || buttonsHtml;
+        } else {
+          // Modal dialog (delete confirmation, etc.) — extract title + message
+          // Remove tagged buttons from text extraction to get the description
+          const cloneForText = tempDiv.cloneNode(true);
+          cloneForText.querySelectorAll('[data-ag-click-id]').forEach(el => el.remove());
+          const msgText = cloneForText.textContent.trim();
+          // Split into title (first line/sentence) and message (rest)
+          const lines = msgText.split(/\n/).map(l => l.trim()).filter(Boolean);
+          const title = lines[0] || 'Confirm';
+          const message = lines.slice(1).join(' ') || '';
+
+          dropdownContent.innerHTML = `
+            <div class="dialog-title">${title}</div>
+            ${message ? `<div class="dialog-message">${message}</div>` : ''}
+            <div class="dialog-buttons">${buttonsHtml}</div>
+          `;
+        }
         addClickProxyHandlers(dropdownContent);
         dropdownOverlay.classList.remove('hidden');
       }
@@ -797,9 +845,10 @@ leftSidebarOverlay.addEventListener('click', closeLeftSidebar);
 
 // Dropdown backdrop dismiss — also close the dropdown in AG
 dropdownBackdrop.addEventListener('click', () => {
+  overlayDismissedAt = Date.now();
   dropdownOverlay.classList.add('hidden');
-  // Clicking body in AG should dismiss the dropdown
-  loadSnapshot();
+  // Dismiss AG's native portal by pressing Escape
+  fetchAPI('/dismiss-portal', { method: 'POST' }).catch(() => {});
 });
 
 // Permission backdrop: click Skip when dismissing
@@ -839,7 +888,8 @@ rightSidebarOverlay.addEventListener('click', closeRightSidebar);
 // ─────────────────────────────────────────────
 // New Session Page — functional input overlay
 // ─────────────────────────────────────────────
-function renderNewSessionPage(container, capturedHtml) {
+function renderNewSessionPage(container, data) {
+  const capturedHtml = data.html;
   // Extract project name from the captured HTML (look for the project dropdown button label)
   let projectName = '';
   const tmpDiv = document.createElement('div');
@@ -853,6 +903,36 @@ function renderNewSessionPage(container, capturedHtml) {
   if (modelBtn) {
     const span = modelBtn.querySelector('span');
     if (span) modelName = span.textContent.trim();
+  }
+
+  // Environment and branch from snapshot data
+  const environmentName = data.environmentName || '';
+  const branchName = data.branchName || '';
+  const isWorktreeMode = environmentName && environmentName !== 'Local';
+
+  // Build environment/branch settings bar
+  let envBarHtml = '';
+  if (environmentName) {
+    // Environment/worktree icon: monitor for Local, fork-tree for worktree
+    const envIcon = environmentName === 'Local'
+      ? '<span class="material-symbols-rounded" style="font-size:14px">desktop_windows</span>'
+      : '<span class="material-symbols-rounded" style="font-size:14px">account_tree</span>';
+    envBarHtml = `
+      <div class="ag2r-new-session-env-bar">
+        <button type="button" class="ag2r-env-chip" data-ag-click-id="env:0" data-ag-click-label="${environmentName}">
+          ${envIcon}
+          <span>${environmentName}</span>
+          <span class="material-symbols-rounded" style="font-size:12px">expand_more</span>
+        </button>
+        ${branchName ? `
+        <button type="button" class="ag2r-env-chip" data-ag-click-id="env:1" data-ag-click-label="${branchName}">
+          <span class="material-symbols-rounded" style="font-size:14px">fork_right</span>
+          <span>${branchName}</span>
+          <span class="material-symbols-rounded" style="font-size:12px">expand_more</span>
+        </button>
+        ` : ''}
+      </div>
+    `;
   }
 
   // Build our own functional UI
@@ -885,6 +965,7 @@ function renderNewSessionPage(container, capturedHtml) {
           </button>
         </div>
       </form>
+      ${envBarHtml}
     </div>
   `;
 
@@ -1095,13 +1176,13 @@ function addClickProxyHandlers(container) {
       // Left sidebar stays open — user closes it by tapping the overlay (outside).
       // Only close for explicit session navigation (conversation links).
       if (clickId.startsWith('left:')) {
-        // Check if clicked element is a conversation link (navigates away)
         const isConversationLink = el.closest('a[href]') !== null;
         if (isConversationLink) closeLeftSidebar();
       }
 
       // Close dropdown overlay after any dropdown/dialog action
       if (clickId.startsWith('dropdown:') || clickId.startsWith('dialog:')) {
+        overlayDismissedAt = Date.now();
         dropdownOverlay.classList.add('hidden');
         closeLeftSidebar();
       }

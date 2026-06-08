@@ -851,6 +851,41 @@ body {
   50% { opacity: 0.5; }
 }
 
+/* ── New Session — Environment/Branch Settings Bar ── */
+.ag2r-new-session-env-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: 500px;
+  padding: 0 4px;
+}
+
+.ag2r-env-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: var(--font-sans);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+  white-space: nowrap;
+}
+
+.ag2r-env-chip:active {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.ag2r-env-chip .material-symbols-rounded {
+  opacity: 0.8;
+}
+
 /* ── Dropdown Overlay (AG portal menus) ── */
 .dropdown-overlay {
   position: fixed;
@@ -874,13 +909,16 @@ body {
 .dropdown-content {
   position: relative;
   z-index: 1;
-  background: var(--surface);
-  border: 1px solid var(--border);
+  background: var(--card, var(--bg-panel, #1c1c2e));
+  border: 1px solid var(--border, #333);
   border-radius: 12px;
   padding: 8px;
   min-width: 200px;
   max-width: 90vw;
+  max-height: 70vh;
+  overflow-y: auto;
   margin-bottom: 16px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   animation: slideUpDropdown 200ms ease-out;
 }
 
@@ -906,6 +944,20 @@ body {
 
 .dropdown-content button.destructive {
   color: #ef4444;
+}
+
+.dropdown-separator {
+  height: 1px;
+  background: var(--border, #333);
+  margin: 4px 0;
+}
+
+.dropdown-header {
+  padding: 6px 16px 4px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted, #888);
+  user-select: none;
 }
 
 @keyframes slideUpDropdown {
