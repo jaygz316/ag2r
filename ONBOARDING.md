@@ -40,6 +40,7 @@
 | Quick actions (Continue button) visibility | `public/js/app.js` — search `quickActions` |
 | Agent running state + action button toggle | `public/js/app.js` — search `agentRunning` and `updateActionButton` |
 | Environment config template (SSoT for config) | `.env.example` |
+| Photo upload (POST /upload + CDP drop injection) | `server.js` — search `Upload Image` and `POST /upload` |
 | Project dependencies (SSoT for versions) | `package.json` |
 | Self-signed SSL certs (auto-generated, gitignored) | `certs/` |
 | PWA manifest (home screen icon + app metadata) | `public/manifest.json` |
