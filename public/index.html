@@ -134,6 +134,29 @@
       </div>
       <div id="settings-content" class="settings-content"></div>
     </div>
+    <!-- Scheduled Tasks full-screen overlay -->
+    <div id="scheduled-tasks-overlay" class="scheduled-tasks-overlay hidden">
+      <div class="scheduled-tasks-header">
+        <button id="scheduled-tasks-back" class="settings-back-btn" aria-label="Back">
+          <span class="material-symbols-rounded">arrow_back</span>
+        </button>
+        <span class="settings-title">Scheduled Tasks</span>
+      </div>
+      <div id="scheduled-tasks-content" class="scheduled-tasks-content"></div>
+      <div id="scheduled-tasks-dialog" class="scheduled-tasks-dialog hidden"></div>
+    <!-- Text input modal (for scheduled tasks form fields) -->
+    <div id="text-input-modal" class="text-input-modal hidden">
+      <div id="text-input-backdrop" class="text-input-backdrop"></div>
+      <div class="text-input-card">
+        <label id="text-input-label" class="text-input-label"></label>
+        <input id="text-input-field" class="text-input-field" type="text" autocomplete="off" />
+        <textarea id="text-input-area" class="text-input-area hidden" rows="4"></textarea>
+        <div class="text-input-actions">
+          <button id="text-input-cancel" class="text-input-btn cancel">Cancel</button>
+          <button id="text-input-submit" class="text-input-btn submit">Done</button>
+        </div>
+      </div>
+    </div>
     <!-- Floating comment button (appears on text selection in right sidebar) -->
     <button id="comment-fab" class="comment-fab hidden" aria-label="Add comment">
       <span class="material-symbols-rounded">add_comment</span>

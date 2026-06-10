@@ -65,6 +65,19 @@ const permissionContent = document.getElementById('permission-content');
 const settingsOverlay = document.getElementById('settings-overlay');
 const settingsContent = document.getElementById('settings-content');
 const settingsBack = document.getElementById('settings-back');
+// Scheduled Tasks overlay
+const scheduledTasksOverlay = document.getElementById('scheduled-tasks-overlay');
+const scheduledTasksContent = document.getElementById('scheduled-tasks-content');
+const scheduledTasksDialog = document.getElementById('scheduled-tasks-dialog');
+const scheduledTasksBack = document.getElementById('scheduled-tasks-back');
+// Text input modal (for scheduled tasks form fields)
+const textInputModal = document.getElementById('text-input-modal');
+const textInputBackdrop = document.getElementById('text-input-backdrop');
+const textInputLabel = document.getElementById('text-input-label');
+const textInputField = document.getElementById('text-input-field');
+const textInputArea = document.getElementById('text-input-area');
+const textInputCancel = document.getElementById('text-input-cancel');
+const textInputSubmit = document.getElementById('text-input-submit');
 // Running tasks strip
 const runningTasks = document.getElementById('running-tasks');
 const runningTasksHeader = document.getElementById('running-tasks-header');
@@ -677,6 +690,32 @@ async function loadSnapshot() {
     } else {
       settingsOverlay.classList.add('hidden');
       settingsContent._lastHtml = '';
+    }
+
+    // Render Scheduled Tasks overlay if AG's scheduled tasks page is open
+    if (data.scheduledTasksHtml) {
+      if (scheduledTasksContent._lastHtml !== data.scheduledTasksHtml) {
+        scheduledTasksContent._lastHtml = data.scheduledTasksHtml;
+        scheduledTasksContent.innerHTML = data.scheduledTasksHtml;
+        addClickProxyHandlers(scheduledTasksContent);
+      }
+      scheduledTasksOverlay.classList.remove('hidden');
+    } else {
+      scheduledTasksOverlay.classList.add('hidden');
+      scheduledTasksContent._lastHtml = '';
+    }
+
+    // Render Scheduled Tasks dialog (New Scheduled Task form, etc.)
+    if (data.scheduledTasksDialogHtml) {
+      if (scheduledTasksDialog._lastHtml !== data.scheduledTasksDialogHtml) {
+        scheduledTasksDialog._lastHtml = data.scheduledTasksDialogHtml;
+        scheduledTasksDialog.innerHTML = data.scheduledTasksDialogHtml;
+        addClickProxyHandlers(scheduledTasksDialog);
+      }
+      scheduledTasksDialog.classList.remove('hidden');
+    } else {
+      scheduledTasksDialog.classList.add('hidden');
+      scheduledTasksDialog._lastHtml = '';
     }
 
     // Track active artifact URI for commenting
@@ -1315,6 +1354,13 @@ settingsBack.addEventListener('click', () => {
   fetchAPI('/dismiss-settings', { method: 'POST' }).catch(() => {});
 });
 
+// Scheduled Tasks back button — dismiss and navigate back to conversation
+scheduledTasksBack.addEventListener('click', () => {
+  scheduledTasksOverlay.classList.add('hidden');
+  scheduledTasksContent._lastHtml = '';
+  fetchAPI('/dismiss-scheduled-tasks', { method: 'POST' }).catch(() => {});
+});
+
 // ─────────────────────────────────────────────
 // Right Sidebar (on-demand fetch from AG)
 // ─────────────────────────────────────────────
@@ -1649,14 +1695,9 @@ function renderSidebar(container, html) {
     const topBar = container.querySelector('[style*="app-region: drag"]');
     if (topBar) topBar.remove();
 
-    // The wrapper div for the 3 hidden actions (New Conversation, History, Scheduled)
-    // It's a div.px-2 that is a direct child of the sidebar nav, containing the action buttons
-    const actionBtns = container.querySelectorAll('[data-ag-click-label="New Conversation"], [data-ag-click-label="Conversation History"], [data-ag-click-label="Scheduled Tasks"]');
-    if (actionBtns.length > 0) {
-      // Walk up to the px-2 wrapper and remove it entirely
-      const wrapper = actionBtns[0].closest('.px-2');
-      if (wrapper) wrapper.remove();
-    }
+    // Remove New Conversation and History buttons (not useful on mobile).
+    // Scheduled Tasks stays visible — it's the only action kept from the top 3.
+    container.querySelectorAll('[data-ag-click-label="New Conversation"], [data-ag-click-label="Conversation History"]').forEach(el => el.remove());
 
     // The separator line between actions and project list
     // It's a div with mt-3 mx-2 h-px (transparent background divider)
@@ -1702,6 +1743,23 @@ function addClickProxyHandlers(container) {
       const label = el.dataset.agClickLabel || '';
 
       console.debug('[Click] id=' + clickId, 'label="' + label + '"', 'tag=' + el.tagName, 'class=' + (el.className || '').substring(0, 80));
+
+      // Intercept scheddlg: clicks on INPUT/TEXTAREA — show local text input modal
+      if (clickId.startsWith('scheddlg:')) {
+        const origTag = el.tagName;
+        const origPlaceholder = el.getAttribute('placeholder') || '';
+        // Check if this element is an input/textarea (in the captured DOM)
+        if (origTag === 'INPUT' || origTag === 'TEXTAREA') {
+          const currentValue = el.getAttribute('data-ag-value') || '';
+          showTextInput(
+            origPlaceholder || (origTag === 'TEXTAREA' ? 'Enter text' : 'Enter value'),
+            origPlaceholder,
+            origTag === 'TEXTAREA',
+            currentValue
+          );
+          return; // Don't proxy the click
+        }
+      }
       el.classList.add('ag-clicking');
       let result = null;
       try {
@@ -1719,10 +1777,12 @@ function addClickProxyHandlers(container) {
       // Close sidebar only for conversation row clicks (navigates away).
       // Conversation rows have min-h-[32px] in their class; project headers,
       // "See all/less", and "Settings" do not.
+      // Also close for "Scheduled Tasks" since it opens a full-screen overlay.
       if (clickId.startsWith('left:')) {
         const elClass = (el.className || '').toString();
         const isConversationRow = elClass.includes('min-h-[32px]');
-        if (isConversationRow) closeLeftSidebar();
+        const isScheduledTasks = label === 'Scheduled Tasks';
+        if (isConversationRow || isScheduledTasks) closeLeftSidebar();
       }
 
       // Close dropdown overlay after any dropdown/dialog action
@@ -1771,6 +1831,78 @@ function addClickProxyHandlers(container) {
 
 // Wire click proxies on the static input bar (model chip, etc.)
 addClickProxyHandlers(inputBar);
+
+// ─────────────────────────────────────────────
+// Text Input Modal (for scheduled tasks form fields)
+// ─────────────────────────────────────────────
+let pendingTextInputPlaceholder = null;
+
+function showTextInput(label, placeholder, isTextarea, currentValue) {
+  pendingTextInputPlaceholder = placeholder;
+  textInputLabel.textContent = label;
+
+  if (isTextarea) {
+    textInputField.classList.add('hidden');
+    textInputArea.classList.remove('hidden');
+    textInputArea.value = currentValue || '';
+    textInputArea.placeholder = placeholder;
+  } else {
+    textInputArea.classList.add('hidden');
+    textInputField.classList.remove('hidden');
+    textInputField.value = currentValue || '';
+    textInputField.placeholder = placeholder;
+  }
+
+  textInputModal.classList.remove('hidden');
+
+  // Auto-focus after a frame (ensures keyboard pops up on mobile)
+  requestAnimationFrame(() => {
+    (isTextarea ? textInputArea : textInputField).focus();
+  });
+}
+
+function closeTextInput() {
+  textInputModal.classList.add('hidden');
+  textInputField.value = '';
+  textInputArea.value = '';
+  pendingTextInputPlaceholder = null;
+}
+
+async function submitTextInput() {
+  const isTextarea = !textInputArea.classList.contains('hidden');
+  const text = isTextarea ? textInputArea.value : textInputField.value;
+  const placeholder = pendingTextInputPlaceholder;
+
+  closeTextInput();
+
+  if (!placeholder) return;
+
+  try {
+    const res = await fetchAPI('/type-text', {
+      method: 'POST',
+      body: JSON.stringify({ placeholder, text }),
+    });
+    const result = await res.json();
+    console.debug('[TypeText] Result:', result);
+    // Refresh snapshot to show updated value
+    setTimeout(loadSnapshot, 300);
+    setTimeout(loadSnapshot, 800);
+  } catch (err) {
+    console.debug('[TypeText] Error:', err.message);
+  }
+}
+
+textInputCancel.addEventListener('click', closeTextInput);
+textInputBackdrop.addEventListener('click', closeTextInput);
+textInputSubmit.addEventListener('click', submitTextInput);
+
+// Submit on Enter for single-line input (not textarea)
+textInputField.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    submitTextInput();
+  }
+});
 
 // ─────────────────────────────────────────────
 // Connection Status
