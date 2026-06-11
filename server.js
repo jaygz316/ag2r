@@ -500,7 +500,7 @@ const CAPTURE_SCRIPT = `
   // -- 14. Capture LEFT sidebar (bg-sidebar) --
   let leftSidebarHtml = null;
   try {
-    const leftRoot = document.querySelector('[class*="bg-sidebar"]');
+    const leftRoot = document.querySelector('div[class*="bg-sidebar"][class*="flex-col"]');
     if (leftRoot && leftRoot.offsetParent !== null) {
       const leftTagged = tagInteractives(leftRoot, 'left', true, true);
       const leftClone = leftRoot.cloneNode(true);
@@ -1368,7 +1368,7 @@ app.post('/expand-left-sidebar', async (req, res) => {
   try {
     const result = await evaluateInBrowser(`
       (async () => {
-        const leftRoot = document.querySelector('[class*="bg-sidebar"]');
+        const leftRoot = document.querySelector('div[class*="bg-sidebar"][class*="flex-col"]');
         const isCollapsed = !leftRoot || leftRoot.offsetParent === null;
         if (!isCollapsed) return { ok: true, wasCollapsed: false };
         // Click the sidebar toggle button to expand
@@ -1476,7 +1476,7 @@ app.post('/dismiss-scheduled-tasks', async (req, res) => {
     const result = await evaluateAcrossContexts(`
     (() => {
       // Find a conversation row to click in the sidebar
-      const sidebar = document.querySelector('[class*="bg-sidebar"]');
+      const sidebar = document.querySelector('div[class*="bg-sidebar"][class*="flex-col"]');
       if (sidebar) {
         // Click the first conversation row (min-h-[32px] identifies them)
         const row = sidebar.querySelector('[class*="min-h-[32px]"]');
@@ -1697,7 +1697,7 @@ app.post('/click', async (req, res) => {
           document.getElementById('chat') ||
           document.getElementById('cascade');
       } else if (source === 'left') {
-        root = document.querySelector('[class*="bg-sidebar"]');
+        root = document.querySelector('div[class*="bg-sidebar"][class*="flex-col"]');
       } else if (source === 'right') {
         // Anchor-based: find via tab-id buttons or close-aux-pane
         const tabBtn = document.querySelector('[data-tab-id="overview"], [data-tab-id="review"]');
