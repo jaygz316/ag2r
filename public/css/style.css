@@ -5,26 +5,26 @@
 
 /* ── Design Tokens (from AG's resolved theme) ── */
 :root {
-  /* Core — matches AG's body background: rgb(16, 16, 16) */
-  --bg-app: #101010;
-  --bg-panel: #161616;      /* AG --sidebar / --muted */
-  --bg-surface: #1c1c1c;    /* AG --card / --sidebar-muted */
-  --bg-hover: #2d2d2d;      /* AG --secondary */
-  --bg-input: #1c1c1c;      /* AG --card */
+  /* Core — matches AG's resolved theme variables if present, falling back to dark theme defaults */
+  --bg-app: var(--background, #101010);
+  --bg-panel: var(--sidebar, var(--muted, #161616));
+  --bg-surface: var(--card, var(--sidebar-muted, #1c1c1c));
+  --bg-hover: var(--secondary, #2d2d2d);
+  --bg-input: var(--card, #1c1c1c);
 
   /* Text — matches AG's text color scale */
-  --text-primary: #cccccc;   /* AG --foreground */
-  --text-secondary: #9d9d9d; /* AG --secondary-foreground */
-  --text-muted: #6e6e6e;     /* AG --muted-foreground */
+  --text-primary: var(--foreground, #cccccc);
+  --text-secondary: var(--secondary-foreground, #9d9d9d);
+  --text-muted: var(--muted-foreground, #6e6e6e);
 
   /* Accent — AG's --primary */
-  --accent: #007acc;
-  --accent-hover: #1a8ad4;
-  --accent-dim: rgba(0, 122, 204, 0.15);
+  --accent: var(--primary, #007acc);
+  --accent-hover: var(--primary, #1a8ad4);
+  --accent-dim: color-mix(in srgb, var(--accent) 15%, transparent);
 
   /* Borders — AG's --border / --card-border */
-  --border: #252525;          /* AG --card-border */
-  --border-subtle: rgba(255, 255, 255, 0.05); /* AG --border */
+  --border: var(--border, #252525);
+  --border-subtle: var(--border-subtle, color-mix(in srgb, var(--text-primary) 5%, transparent));
 
   --red: #ef4444;
   --green: #22c55e;
@@ -310,7 +310,7 @@ body {
 #left-sidebar-content .group-hover\:visible {
   visibility: visible !important;
   position: relative;
-  background: hsl(var(--sidebar, 0 0% 8.5%));
+  background: var(--bg-panel);
   gap: 0 !important;
   padding-left: 0 !important;
   padding-right: 2px !important;
@@ -328,7 +328,7 @@ body {
   top: 0;
   bottom: 0;
   width: 12px;
-  background: linear-gradient(to right, transparent, hsl(var(--sidebar, 0 0% 8.5%)));
+  background: linear-gradient(to right, transparent, var(--bg-panel));
   pointer-events: none;
 }
 
@@ -633,7 +633,7 @@ body {
 
 /* When tasks are running, input-bar becomes the outer card (like AG's inputBox) */
 .input-bar:has(.running-tasks:not(.hidden)) {
-  background: #252525;
+  background: var(--border);
   border-top: none;
   border-radius: var(--radius-lg);
   padding: 1px;
@@ -1211,14 +1211,14 @@ body {
   max-width: 500px;
   position: relative;
   border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  background: color-mix(in srgb, #ffffff 5%, #101010);
+  border: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--text-primary) 5%, var(--bg-app));
   overflow: hidden;
 }
 
 /* When env bar present, form becomes the outer card */
 .ag2r-new-session-form.has-env-bar {
-  background: #252525;
+  background: var(--border);
   border: none;
   padding: 1px;
   overflow: visible;
