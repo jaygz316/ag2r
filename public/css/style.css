@@ -1688,15 +1688,36 @@ body {
   border: none !important;
 }
 
-/* Settings nav panel: narrow fixed width, smaller text */
+/* Settings nav panel: resizable width, smaller text */
 .settings-content [class*="border-r"] {
-  max-width: 100px !important;
-  min-width: 100px !important;
+  position: relative;
+  width: 180px;
+  min-width: 120px;
+  max-width: 400px;
   flex-shrink: 0 !important;
   overflow-y: auto !important;
   -webkit-overflow-scrolling: touch;
-  font-size: 12px !important;
+  font-size: 13px !important;
 }
+
+.settings-sidebar-resizer {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 50;
+  touch-action: none;
+  transition: background-color 0.15s ease;
+}
+
+.settings-sidebar-resizer:hover,
+.settings-sidebar-resizer.resizing {
+  background: var(--accent, #007acc);
+  opacity: 0.5;
+}
+
 
 /* Hide AG's close X button — positioned absolute top-right of settings card */
 .settings-content button[class*="absolute"][class*="top-4"][class*="right-4"] {
