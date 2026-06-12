@@ -228,7 +228,17 @@ function scheduleReconnect() {
 async function evaluateInBrowser(expression, opts = {}) {
   if (!cdpClient) throw new Error('CDP not connected');
 
-  const sorted = [...cdpContexts].sort((a, b) => {
+  const { forceDefaultContext, ...evalOpts } = opts;
+
+  let contexts = [...cdpContexts];
+  if (forceDefaultContext) {
+    contexts = contexts.filter(ctx => ctx.auxData?.isDefault);
+    if (contexts.length === 0) {
+      throw new Error('No default execution context available');
+    }
+  }
+
+  const sorted = contexts.sort((a, b) => {
     if (a.id === preferredContextId) return -1;
     if (b.id === preferredContextId) return 1;
     const aDefault = a.auxData?.isDefault ? 1 : 0;
@@ -243,7 +253,7 @@ async function evaluateInBrowser(expression, opts = {}) {
         contextId: ctx.id,
         awaitPromise: true,
         returnByValue: true,
-        ...opts,
+        ...evalOpts,
       });
 
       if (result.exceptionDetails) {
@@ -251,8 +261,10 @@ async function evaluateInBrowser(expression, opts = {}) {
         continue;
       }
 
-      // Lock to this context on success
-      preferredContextId = ctx.id;
+      // Lock to this context on success only if it is default
+      if (ctx.auxData?.isDefault) {
+        preferredContextId = ctx.id;
+      }
       return result.result?.value ?? null;
     } catch (e) {
       console.debug('[CDP] Eval failed in context', ctx.id, e.message);
@@ -1165,7 +1177,7 @@ function buildInjectScript(text) {
 
 async function injectMessage(text) {
   const script = buildInjectScript(text);
-  return await evaluateInBrowser(script);
+  return await evaluateInBrowser(script, { forceDefaultContext: true });
 }
 
 // ─────────────────────────────────────────────
@@ -1196,7 +1208,7 @@ const STOP_SCRIPT = `
 `;
 
 async function stopGeneration() {
-  return await evaluateInBrowser(STOP_SCRIPT);
+  return await evaluateInBrowser(STOP_SCRIPT, { forceDefaultContext: true });
 }
 
 // ─────────────────────────────────────────────
@@ -1431,7 +1443,24 @@ app.get('/snapshot', (req, res) => {
 // --- Right Sidebar Endpoint (on-demand) ---
 app.get('/right-sidebar', async (req, res) => {
   try {
-    const html = await evaluateInBrowser(RIGHT_SIDEBAR_SCRIPT);
+    let html = await evaluateInBrowser(RIGHT_SIDEBAR_SCRIPT);
+    if (!html) {
+      // Sidebar is closed. Try to click the toggle button to open it.
+      const opened = await evaluateInBrowser(`(() => {
+        const btn = document.querySelector('[data-testid="toggle-aux-sidebar"]');
+        if (btn) {
+          btn.click();
+          return true;
+        }
+        return false;
+      })()`, { forceDefaultContext: true });
+
+      if (opened) {
+        // Wait briefly for the sidebar to render
+        await new Promise(resolve => setTimeout(resolve, 250));
+        html = await evaluateInBrowser(RIGHT_SIDEBAR_SCRIPT);
+      }
+    }
     res.json({ html: html || null });
   } catch (e) {
     console.debug('[RightSidebar] Error:', e.message);
@@ -1503,7 +1532,7 @@ app.post('/expand-left-sidebar', async (req, res) => {
         toggleBtn.click();
         return { ok: true, wasCollapsed: true };
       })()
-    `);
+    `, { forceDefaultContext: true });
     log('ExpandLeftSidebar', JSON.stringify(result));
     res.json(result || { ok: false });
   } catch (e) {
@@ -1574,7 +1603,7 @@ app.post('/copy-response', async (req, res) => {
       return { ok: true, text: captured || '' };
     })()
     `;
-    const result = await evaluateInBrowser(script);
+    const result = await evaluateInBrowser(script, { forceDefaultContext: true });
     log('CopyResponse', `clickId=${clickId} text=${(result?.text || '').length} chars`);
     res.json(result || { ok: false });
   } catch (e) {
@@ -1586,7 +1615,7 @@ app.post('/copy-response', async (req, res) => {
 // --- Dismiss Portal (close dropdowns/dialogs in AG via Escape key) ---
 app.post('/dismiss-portal', async (req, res) => {
   try {
-    await evaluateInBrowser(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }))`);
+    await evaluateInBrowser(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }))`, { forceDefaultContext: true });
     res.json({ ok: true });
   } catch (e) {
     console.debug('[DismissPortal] Error:', e.message);
@@ -1664,7 +1693,7 @@ app.post('/dismiss-settings', async (req, res) => {
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
         return { ok: true, method: 'escape' };
       })()
-    `);
+    `, { forceDefaultContext: true });
     log('DismissSettings', JSON.stringify(result));
     res.json(result || { ok: false });
   } catch (e) {
@@ -1868,7 +1897,7 @@ app.post('/click', async (req, res) => {
         })()
         `;
         // Try preferred context first
-        let result = await evaluateInBrowser(portalClickScript);
+        let result = await evaluateInBrowser(portalClickScript, { forceDefaultContext: true });
         // If not found in preferred context, try across all contexts (kebab menu in isolated context)
         if (!result) {
           result = await evaluateAcrossContexts(portalClickScript);
@@ -2259,7 +2288,7 @@ app.post('/click', async (req, res) => {
     })()
     `;
 
-    const result = await evaluateInBrowser(clickScript);
+    const result = await evaluateInBrowser(clickScript, { forceDefaultContext: true });
     log('Click', `Result: ${JSON.stringify(result)}`);
     res.json(result || { ok: false, reason: 'null_result' });
 
@@ -2481,7 +2510,7 @@ app.post('/upload', upload.single('image'), async (req, res) => {
 
       return { ok: true, method: 'drop', fileName, size: bytes.length };
     })()
-    `);
+    `, { forceDefaultContext: true });
 
     log('Upload', `Injection result: ${JSON.stringify(result)}`);
 
