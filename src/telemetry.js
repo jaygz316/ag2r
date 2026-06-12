@@ -115,6 +115,30 @@ function toFirestoreValue(val) {
   return { stringValue: String(val) };
 }
 
+// Converts Firestore Value format back to plain JS.
+function fromFirestoreValue(val) {
+  if (!val || typeof val !== 'object') return null;
+  if ('nullValue' in val) return null;
+  if ('booleanValue' in val) return !!val.booleanValue;
+  if ('stringValue' in val) return val.stringValue;
+  if ('integerValue' in val) return Number(val.integerValue);
+  if ('doubleValue' in val) return Number(val.doubleValue);
+  if ('timestampValue' in val) return val.timestampValue;
+  if ('arrayValue' in val) {
+    const values = Array.isArray(val.arrayValue?.values) ? val.arrayValue.values : [];
+    return values.map(fromFirestoreValue);
+  }
+  if ('mapValue' in val) {
+    const out = {};
+    const fields = val.mapValue?.fields || {};
+    for (const [k, v] of Object.entries(fields)) {
+      out[k] = fromFirestoreValue(v);
+    }
+    return out;
+  }
+  return null;
+}
+
 function buildFirestoreDoc(event, payload) {
   const doc = {
     event,
@@ -219,4 +243,41 @@ export function endSession() {
 export function isEnabled() {
   loadConfig();
   return ENABLED;
+}
+
+/**
+ * Read recent telemetry events from Firestore for local dashboard/API use.
+ * Returns an array; never throws in normal operation.
+ */
+export async function readEvents(limit = 200) {
+  loadConfig();
+  if (!ENABLED) return [];
+  if (!FIREBASE_PROJECT_ID || !FIREBASE_API_KEY) return [];
+
+  const safeLimit = Math.max(1, Math.min(1000, Number(limit) || 200));
+  const url = `https://firestore.googleapis.com/v1/projects/${FIREBASE_PROJECT_ID}/databases/(default)/documents/${COLLECTION}?pageSize=${safeLimit}&key=${FIREBASE_API_KEY}`;
+
+  try {
+    const resp = await fetch(url, {
+      method: 'GET',
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!resp.ok) return [];
+
+    const data = await resp.json();
+    const docs = Array.isArray(data.documents) ? data.documents : [];
+
+    return docs
+      .map(doc => {
+        const fields = doc?.fields || {};
+        const event = {};
+        for (const [k, v] of Object.entries(fields)) {
+          event[k] = fromFirestoreValue(v);
+        }
+        return event;
+      })
+      .sort((a, b) => String(b.timestamp || '').localeCompare(String(a.timestamp || '')));
+  } catch {
+    return [];
+  }
 }
