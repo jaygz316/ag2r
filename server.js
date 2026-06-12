@@ -439,7 +439,7 @@ const CAPTURE_SCRIPT = `
 
   // -- 9. Force sticky backgrounds --
   clone.querySelectorAll('[data-ag-sticky]').forEach(el => {
-    el.style.backgroundColor = '#101010';
+    el.style.backgroundColor = 'var(--bg-app)';
   });
 
   // -- 10. Fix inline div-inside-span/p --
