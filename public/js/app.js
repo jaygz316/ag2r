@@ -12,6 +12,42 @@ let isRendering = false;
 let isSending = false;
 let userScrolledAway = false;
 
+// Settings sidebar resizable state
+let settingsSidebarWidth = parseInt(localStorage.getItem('ag2r-settings-sidebar-width') || '180');
+
+function setupSettingsResizer(resizer, sidebar) {
+  let startX = 0;
+  let startWidth = 0;
+
+  function onPointerDown(e) {
+    e.preventDefault();
+    startX = e.clientX;
+    startWidth = sidebar.getBoundingClientRect().width;
+    resizer.classList.add('resizing');
+    document.addEventListener('pointermove', onPointerMove);
+    document.addEventListener('pointerup', onPointerUp);
+  }
+
+  function onPointerMove(e) {
+    const deltaX = e.clientX - startX;
+    const newWidth = Math.max(120, Math.min(400, startWidth + deltaX));
+    settingsSidebarWidth = newWidth;
+    sidebar.style.setProperty('width', `${newWidth}px`, 'important');
+    sidebar.style.setProperty('min-width', `${newWidth}px`, 'important');
+    sidebar.style.setProperty('max-width', `${newWidth}px`, 'important');
+    localStorage.setItem('ag2r-settings-sidebar-width', newWidth);
+  }
+
+  function onPointerUp(e) {
+    resizer.classList.remove('resizing');
+    document.removeEventListener('pointermove', onPointerMove);
+    document.removeEventListener('pointerup', onPointerUp);
+  }
+
+  resizer.addEventListener('pointerdown', onPointerDown);
+}
+
+
 // Mobile detection: coarse pointer = touchscreen (phone/tablet)
 // On mobile, Enter inserts a newline; the send button sends.
 // On desktop, Enter sends; Shift+Enter inserts a newline.
@@ -684,6 +720,23 @@ async function loadSnapshot() {
       if (settingsContent._lastHtml !== data.settingsHtml) {
         settingsContent._lastHtml = data.settingsHtml;
         settingsContent.innerHTML = data.settingsHtml;
+
+        // Apply resizable settings sidebar styling
+        const sidebar = settingsContent.querySelector('[class*="border-r"]');
+        if (sidebar) {
+          sidebar.style.setProperty('width', `${settingsSidebarWidth}px`, 'important');
+          sidebar.style.setProperty('min-width', `${settingsSidebarWidth}px`, 'important');
+          sidebar.style.setProperty('max-width', `${settingsSidebarWidth}px`, 'important');
+
+          let resizer = sidebar.querySelector('.settings-sidebar-resizer');
+          if (!resizer) {
+            resizer = document.createElement('div');
+            resizer.className = 'settings-sidebar-resizer';
+            sidebar.appendChild(resizer);
+            setupSettingsResizer(resizer, sidebar);
+          }
+        }
+
         addClickProxyHandlers(settingsContent);
       }
       settingsOverlay.classList.remove('hidden');

@@ -89,6 +89,10 @@
 - **Running tasks live inside the input box container.** `#antigravity.agentSidePanelInputBox` has a `.rounded-t-2xl` child (sibling of `.bg-card`) that contains the task list. This element is completely absent from the DOM when no tasks are running — it's not hidden, it doesn't exist. The capture must null-check both the input box and the task section child.
 - **Settings dismiss uses backdrop click.** `dismiss-settings` in `server.js` clicks the settings modal's backdrop overlay (`.bg-black\/80`) instead of a Go Back button, ensuring settings close in one action regardless of which tab was visited.
 - **Mobile SpeechRecognition produces cumulative results.** Desktop browsers produce one result per utterance (incremental). Mobile Safari/Chrome produce one result per word, and each result's `transcript` contains the FULL text from session start (cumulative). The `createVoiceInput` factory in `app.js` handles this by using ONLY the last result's transcript — never concatenating all results. Creating a new `SpeechRecognition` instance on restart (instead of reusing) causes a system ding on mobile. Calling `recognition.stop()` is async — null out `onresult`/`onend` before stopping to prevent post-stop events from refilling a cleared input.
+- **Overlay z-index changes (z-[2550] vs z-[5000]).** AG's settings and dialog overlays changed their z-index class from `z-[2550]` to `z-[5000]`. Always ensure selectors in `server.js` query both to maintain backward/forward compatibility.
+- **Settings sidebar resizing.** The settings sidebar in AG2R is resizable via a drag handle. The width is stored in `localStorage` under `ag2r-settings-sidebar-width` and applied to the settings sidebar whenever the settings modal renders/updates.
+
+
 
 ---
 

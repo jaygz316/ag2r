@@ -303,7 +303,7 @@ const CAPTURE_SCRIPT = `
     let idx = 0;
     const tagged = [];
     // Semantic interactive elements — always tag, no text-length filter
-    root.querySelectorAll('button, a, [role="button"]').forEach(el => {
+    root.querySelectorAll('button, a, [role="button"], [role="option"], [role="menuitem"]').forEach(el => {
       if (skipVisibilityCheck || el.offsetParent !== null) {
         const text = (el.textContent || '').trim();
         el.setAttribute('data-ag-click-id', prefix + ':' + idx);
@@ -530,49 +530,70 @@ const CAPTURE_SCRIPT = `
   } catch (e) {
     console.debug('[AG2R] Sidebar signature error:', e.message);
   }
-  // -- 8. Capture portal elements (dropdowns, dialogs) from body --
-  // AG renders these outside #root as direct body children.
+  // -- 8. Capture portal elements (dropdowns, dialogs) --
   let dropdownHtml = null;
   let dialogHtml = null;
+
+  // 8a. Capture dropdown menu (role="listbox") document-wide
   try {
+    const activeListbox = Array.from(document.querySelectorAll('[role="listbox"]'))
+      .find(el => el.getBoundingClientRect().width > 0 && el.textContent.trim().length > 0);
+    if (activeListbox) {
+      const tagged = tagInteractives(activeListbox, 'dropdown', true, false);
+      const clone = activeListbox.cloneNode(true);
+      untagAll(tagged);
+      dropdownHtml = clone.outerHTML;
+    }
+  } catch (e) {
+    console.debug('[AG2R] Listbox capture error:', e.message);
+  }
+
+  // 8b. Capture portal dialogs (fixed body overlays and role="dialog" popovers)
+  try {
+    // Check direct body children for fixed/inset overlays first
     for (const child of document.body.children) {
-      if (child.id || child.tagName === 'SCRIPT' || child.tagName === 'STYLE') continue;
+      if (child.id === 'root' || child.id === 'a11y-live-announcer' || child.tagName === 'SCRIPT' || child.tagName === 'STYLE') continue;
       const text = child.textContent.trim();
       if (!text) continue;
 
-      // Dropdown menu (role="listbox")
-      if (!dropdownHtml && child.getAttribute('role') === 'listbox') {
-        const tagged = tagInteractives(child, 'dropdown', true, false);
-        const clone = child.cloneNode(true);
-        untagAll(tagged);
-        dropdownHtml = clone.outerHTML;
-      }
-
-      // Dialog/modal (fixed overlay with buttons)
       const cls = child.className || '';
-      if (!dialogHtml && cls.includes('fixed') && cls.includes('inset-0')) {
+      if (cls.includes('fixed') && cls.includes('inset-0')) {
         const tagged = tagInteractives(child, 'dialog', true, false);
         const clone = child.cloneNode(true);
         untagAll(tagged);
         dialogHtml = clone.outerHTML;
+        break;
       }
+    }
 
-      // Popover dialog (role="dialog" portal, e.g. environment selector, context menus)
-      if (!dialogHtml && child.getAttribute('role') === 'dialog') {
-        const tagged = tagInteractives(child, 'dialog', true, false);
-        const clone = child.cloneNode(true);
+    // Fallback: search document-wide for active/visible role="dialog" popovers
+    if (!dialogHtml) {
+      const activeDialog = Array.from(document.querySelectorAll('[role="dialog"]'))
+        .find(el => {
+          if (el.getBoundingClientRect().width <= 0) return false;
+          const cls = el.className || '';
+          // Exclude main settings modal overlay
+          if (cls.includes('fixed') && (cls.includes('z-[5000]') || cls.includes('z-[2550]')) && el.querySelector('[class*="max-w-5xl"], [class*="rounded-2xl"]')) {
+            return false;
+          }
+          if (el.id === 'settings-overlay' || el.id === 'scheduled-tasks-overlay') return false;
+          return true;
+        });
+      if (activeDialog) {
+        const tagged = tagInteractives(activeDialog, 'dialog', true, false);
+        const clone = activeDialog.cloneNode(true);
         untagAll(tagged);
         dialogHtml = clone.outerHTML;
       }
     }
   } catch (e) {
-    console.debug('[AG2R] Portal capture error:', e.message);
+    console.debug('[AG2R] Dialog/Portal capture error:', e.message);
   }
 
   // -- 8b. Capture Settings modal (rendered inside #root, not body) --
   let settingsHtml = null;
   try {
-    const settingsOverlay = document.querySelector('#root .fixed.inset-0[class*="z-[2550]"]');
+    const settingsOverlay = document.querySelector('#root .fixed.inset-0[class*="z-[5000]"], #root .fixed.inset-0[class*="z-[2550]"]');
     if (settingsOverlay && settingsOverlay.getBoundingClientRect().width > 0) {
       // Find the settings content container inside the overlay
       const settingsCard = settingsOverlay.querySelector('[class*="max-w-5xl"]') ||
@@ -751,10 +772,10 @@ const SCHEDULED_TASKS_SCRIPT = `
 
 // Separate script for the Scheduled Tasks dialog (New Scheduled Task form, etc.)
 // This is a DIFFERENT execution context from the page, so it must run independently.
-// Detects the z-[2550] overlay that AG uses for modal dialogs.
+// Detects the z-[5000] or z-[2550] overlay that AG uses for modal dialogs.
 const SCHEDULED_TASKS_DIALOG_SCRIPT = `
 (() => {
-  const overlay = document.querySelector('.fixed.inset-0[class*="z-[2550]"]');
+  const overlay = document.querySelector('.fixed.inset-0[class*="z-[5000]"], .fixed.inset-0[class*="z-[2550]"]');
   if (!overlay || overlay.getBoundingClientRect().width <= 0) return null;
   // Only capture if this looks like a scheduled task dialog (not settings)
   const text = overlay.textContent || '';
@@ -763,7 +784,7 @@ const SCHEDULED_TASKS_DIALOG_SCRIPT = `
   let idx = 0;
   const tagged = [];
   // Tag standard interactive elements
-  overlay.querySelectorAll('button, a, [role="button"], input, select, textarea, [role="combobox"], [role="switch"]').forEach(el => {
+  overlay.querySelectorAll('button, a, [role="button"], [role="option"], [role="menuitem"], input, select, textarea, [role="combobox"], [role="switch"]').forEach(el => {
     el.setAttribute('data-ag-click-id', 'scheddlg:' + idx);
     el.setAttribute('data-ag-click-label', (el.textContent || el.getAttribute('placeholder') || '').trim().substring(0, 50));
     idx++;
@@ -810,7 +831,7 @@ const RIGHT_SIDEBAR_SCRIPT = `
   function tagInteractives(root, prefix, skipVisibilityCheck, includeCursorPointer, maxTextLength) {
     let idx = 0;
     const tagged = [];
-    root.querySelectorAll('button, a, [role="button"]').forEach(el => {
+    root.querySelectorAll('button, a, [role="button"], [role="option"], [role="menuitem"]').forEach(el => {
       if (skipVisibilityCheck || el.offsetParent !== null) {
         const text = (el.textContent || '').trim();
         el.setAttribute('data-ag-click-id', prefix + ':' + idx);
@@ -1417,7 +1438,7 @@ app.post('/copy-response', async (req, res) => {
       // Build same element list as /click
       const maxLen = (source === 'chat') ? 80 : 0;
       const visible = [];
-      root.querySelectorAll('button, a, [role="button"]').forEach(el => {
+      root.querySelectorAll('button, a, [role="button"], [role="option"], [role="menuitem"]').forEach(el => {
         if (el.offsetParent !== null) visible.push(el);
       });
       root.querySelectorAll('[class*="cursor-pointer"]').forEach(el => {
@@ -1508,7 +1529,7 @@ app.post('/dismiss-settings', async (req, res) => {
       (async () => {
         // Click the backdrop overlay behind the settings card to close entirely.
         // Don't use 'Go Back' — it navigates through tab history instead of closing.
-        const overlay = document.querySelector('.fixed.inset-0[class*="z-[2550]"]');
+        const overlay = document.querySelector('.fixed.inset-0[class*="z-[5000]"], .fixed.inset-0[class*="z-[2550]"]');
         if (overlay) {
           // The backdrop is the overlay itself; clicking outside the card closes settings.
           // Dispatch click at the overlay edges (not on the card).
@@ -1629,15 +1650,15 @@ app.post('/click', async (req, res) => {
         return res.json(result || { ok: false, reason: 'null_result' });
       }
 
-      // scheddlg:0-99 → elements inside the z-[2550] dialog overlay
+      // scheddlg:0-99 → elements inside the dialog overlay (z-[5000] / z-[2550])
       const safeLabel = JSON.stringify(label || '');
       const dlgClickScript = `
       (() => {
-        const overlay = document.querySelector('.fixed.inset-0[class*="z-[2550]"]');
+        const overlay = document.querySelector('.fixed.inset-0[class*="z-[5000]"], .fixed.inset-0[class*="z-[2550]"]');
         if (!overlay || overlay.getBoundingClientRect().width <= 0) return { ok: false, reason: 'no_dialog' };
         // Must match the same selector order as SCHEDULED_TASKS_DIALOG_SCRIPT
         const elements = [];
-        overlay.querySelectorAll('button, a, [role="button"], input, select, textarea, [role="combobox"], [role="switch"]').forEach(el => elements.push(el));
+        overlay.querySelectorAll('button, a, [role="button"], [role="option"], [role="menuitem"], input, select, textarea, [role="combobox"], [role="switch"]').forEach(el => elements.push(el));
         overlay.querySelectorAll('div.cursor-pointer[aria-expanded]').forEach(el => {
           if (!elements.includes(el)) elements.push(el);
         });
@@ -1714,28 +1735,35 @@ app.post('/click', async (req, res) => {
           }
         }
       } else if (source === 'dropdown') {
-        // Portal dropdown: body > div[role="listbox"]
-        for (const child of document.body.children) {
-          if (child.getAttribute('role') === 'listbox' && child.textContent.trim()) {
-            root = child;
-            break;
-          }
-        }
+        // Portal dropdown: search document-wide for active/visible role="listbox"
+        root = Array.from(document.querySelectorAll('[role="listbox"]'))
+          .find(el => el.getBoundingClientRect().width > 0 && el.textContent.trim().length > 0);
       } else if (source === 'dialog') {
-        // Portal dialog: body > div.fixed.inset-0 (modal) or body > div[role="dialog"] (popover)
+        // Portal dialog: find active modal dialog or popover document-wide
+        // First check for active modal overlays (body-level z-[5000]/z-[2550] dialog overlays)
         for (const child of document.body.children) {
           const cls = child.className || '';
           if (cls.includes('fixed') && cls.includes('inset-0')) {
             root = child;
             break;
           }
-          if (!root && child.getAttribute('role') === 'dialog') {
-            root = child;
-          }
+        }
+        // Fallback: search document-wide for role="dialog" popovers (excluding main settings overlays)
+        if (!root) {
+          root = Array.from(document.querySelectorAll('[role="dialog"]'))
+            .find(el => {
+              if (el.getBoundingClientRect().width <= 0) return false;
+              const cls = el.className || '';
+              if (cls.includes('fixed') && (cls.includes('z-[5000]') || cls.includes('z-[2550]')) && el.querySelector('[class*="max-w-5xl"], [class*="rounded-2xl"]')) {
+                return false;
+              }
+              if (el.id === 'settings-overlay' || el.id === 'scheduled-tasks-overlay') return false;
+              return true;
+            });
         }
       } else if (source === 'settings') {
         // Settings overlay: same selector as capture
-        const settingsOverlay = document.querySelector('#root .fixed.inset-0[class*="z-[2550]"]');
+        const settingsOverlay = document.querySelector('#root .fixed.inset-0[class*="z-[5000]"], #root .fixed.inset-0[class*="z-[2550]"]');
         if (settingsOverlay) {
           root = settingsOverlay.querySelector('[class*="max-w-5xl"]') ||
                  settingsOverlay.querySelector('[class*="rounded-2xl"]') ||
@@ -1827,7 +1855,7 @@ app.post('/click', async (req, res) => {
       // includeCursorPointer=false.
       if (source === 'settings') {
         let sIdx = 0;
-        root.querySelectorAll('button, a, [role="button"]').forEach(el => {
+        root.querySelectorAll('button, a, [role="button"], [role="option"], [role="menuitem"]').forEach(el => {
           el.setAttribute('data-ag-click-id', 'settings:' + sIdx);
           sIdx++;
         });
@@ -1846,7 +1874,7 @@ app.post('/click', async (req, res) => {
       const maxLen = (source === 'chat') ? 80 : 0;
       const visible = [];
       // Semantic interactive elements — always include, no text-length filter
-      root.querySelectorAll('button, a, [role="button"]').forEach(el => {
+      root.querySelectorAll('button, a, [role="button"], [role="option"], [role="menuitem"]').forEach(el => {
         if (skipVis || el.offsetParent !== null) {
           visible.push(el);
         }
@@ -1987,7 +2015,7 @@ app.post('/eval', async (req, res) => {
 });
 
 // --- Type Text into input/textarea (React-compatible) ---
-// Targets element by placeholder text within the z-[2550] dialog overlay.
+// Targets element by placeholder text within the dialog overlay (z-[5000] / z-[2550]).
 // Uses React's nativeInputValueSetter trick to trigger onChange handlers.
 app.post('/type-text', async (req, res) => {
   const { placeholder, text } = req.body;
@@ -2003,7 +2031,7 @@ app.post('/type-text', async (req, res) => {
   const typeScript = `
   (() => {
     // Find the target input/textarea by placeholder within the dialog
-    const overlay = document.querySelector('.fixed.inset-0[class*="z-[2550]"]');
+    const overlay = document.querySelector('.fixed.inset-0[class*="z-[5000]"], .fixed.inset-0[class*="z-[2550]"]');
     const scope = overlay || document;
     const el = scope.querySelector('input[placeholder=' + ${JSON.stringify(JSON.stringify(placeholder))} + '], textarea[placeholder=' + ${JSON.stringify(JSON.stringify(placeholder))} + ']');
     if (!el) return { ok: false, reason: 'element_not_found', placeholder: ${safePlaceholder} };
