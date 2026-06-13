@@ -6,6 +6,7 @@ import { createServer as createHttpServer } from 'http';
 import { WebSocketServer } from 'ws';
 import CDP from 'chrome-remote-interface';
 import fs from 'fs';
+import { execSync, exec } from 'child_process';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -177,32 +178,61 @@ function ensureCerts() {
 // CDP Connection
 // ─────────────────────────────────────────────
 
+// Read CDP port from AG's DevToolsActivePort file (written when --remote-debugging-port=0)
+function readDevToolsPort() {
+  const dtpPath = path.join(
+    os.homedir(), 'Library', 'Application Support', 'Antigravity', 'DevToolsActivePort'
+  );
+  try {
+    const content = fs.readFileSync(dtpPath, 'utf-8').trim();
+    const port = parseInt(content.split('\n')[0], 10);
+    if (port > 0 && port < 65536) return port;
+  } catch {
+    // File doesn't exist or unreadable — AG may not be running
+  }
+  return null;
+}
+
+async function tryPortForTarget(port) {
+  try {
+    const targets = await CDP.List({ host: CDP_HOST, port });
+    if (!targets || targets.length === 0) return null;
+
+    // Priority 1: Workbench target
+    const workbench = targets.find(t =>
+      t.url?.includes('workbench.html') || t.title?.includes('workbench')
+    );
+    if (workbench) return { port, target: workbench };
+
+    // Priority 2: Jetski/Launchpad target
+    const jetski = targets.find(t =>
+      t.url?.includes('jetski') || t.title === 'Launchpad'
+    );
+    if (jetski) return { port, target: jetski };
+
+    // Priority 3: Any page target (AG2.0 fallback)
+    const page = targets.find(t => t.type === 'page');
+    if (page) return { port, target: page };
+  } catch {
+    // Port not available
+  }
+  return null;
+}
+
 async function discoverTarget() {
-  const ports = [CDP_PORT, CDP_PORT + 1, CDP_PORT + 2, CDP_PORT + 3];
+  // Build candidate port list: DevToolsActivePort first (most likely after AG update),
+  // then configured CDP_PORT range as fallback for older AG versions
+  const dtpPort = readDevToolsPort();
+  const ports = new Set();
+  if (dtpPort) ports.add(dtpPort);
+  ports.add(CDP_PORT);
+  ports.add(CDP_PORT + 1);
+  ports.add(CDP_PORT + 2);
+  ports.add(CDP_PORT + 3);
 
   for (const port of ports) {
-    try {
-      const targets = await CDP.List({ host: CDP_HOST, port });
-      if (!targets || targets.length === 0) continue;
-
-      // Priority 1: Workbench target
-      const workbench = targets.find(t =>
-        t.url?.includes('workbench.html') || t.title?.includes('workbench')
-      );
-      if (workbench) return { port, target: workbench };
-
-      // Priority 2: Jetski/Launchpad target
-      const jetski = targets.find(t =>
-        t.url?.includes('jetski') || t.title === 'Launchpad'
-      );
-      if (jetski) return { port, target: jetski };
-
-      // Priority 3: Any page target (AG2.0 fallback)
-      const page = targets.find(t => t.type === 'page');
-      if (page) return { port, target: page };
-    } catch {
-      // Port not available, try next
-    }
+    const result = await tryPortForTarget(port);
+    if (result) return result;
   }
   return null;
 }
@@ -778,7 +808,43 @@ const CAPTURE_SCRIPT = `
     console.debug('[AG2R] Model name extraction error:', e.message);
   }
 
-  return { html, css, agentRunning, scrollInfo, leftSidebarHtml, sidebarSignature, isNewSessionPage, dropdownHtml, dialogHtml, settingsHtml, activeArtifactUri, activeFileUri, permissionHtml, environmentName, branchName, modelName };
+  // -- 13. Detect subagent view --
+  // When viewing a subagent conversation, AG renders a breadcrumb/navigation bar
+  // above the conversation-view container. Detect this by looking for visible
+  // siblings of the container that contain clickable back links.
+  let isSubagentView = false;
+  let parentConversationName = '';
+  try {
+    if (!isNewSessionPage && container) {
+      const cvParent = container.parentElement;
+      if (cvParent) {
+        for (const child of cvParent.children) {
+          if (child === container) break; // Only check siblings BEFORE the container
+          const rect = child.getBoundingClientRect();
+          // Look for a small visible bar (breadcrumb height ~24-48px)
+          if (rect.height > 8 && rect.height < 80) {
+            const links = child.querySelectorAll('a, button, [role="link"], [class*="cursor-pointer"]');
+            const text = child.textContent.trim();
+            if (links.length > 0 && text.length > 0 && text.length < 300) {
+              isSubagentView = true;
+              // Extract parent name from breadcrumb segments (separated by / or > or ›)
+              const parts = text.split(/[/›>]/).map(s => s.trim()).filter(Boolean);
+              if (parts.length >= 2) {
+                parentConversationName = parts[parts.length - 2];
+              } else {
+                parentConversationName = parts[0] || text;
+              }
+              break;
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    console.debug('[AG2R] Subagent detection error:', e.message);
+  }
+
+  return { html, css, agentRunning, scrollInfo, leftSidebarHtml, sidebarSignature, isNewSessionPage, isSubagentView, parentConversationName, dropdownHtml, dialogHtml, settingsHtml, activeArtifactUri, activeFileUri, permissionHtml, environmentName, branchName, modelName };
 })()
 `;
 
@@ -790,6 +856,11 @@ const RUNNING_TASKS_SCRIPT = `
   if (!inputBox) return null;
   const taskSection = inputBox.querySelector('.rounded-t-2xl');
   if (!taskSection || taskSection.getBoundingClientRect().height <= 0) return null;
+  // Verify this section actually contains running tasks — not just a structural wrapper.
+  // Real task sections have: 1 header toggle button + N task name buttons + N stop buttons.
+  // If fewer than 3 buttons (header + 1 name + 1 stop), there are no real tasks.
+  const allBtns = taskSection.querySelectorAll('button');
+  if (allBtns.length < 3) return null;
   let taskIdx = 0;
   const taskTagged = [];
   taskSection.querySelectorAll('button').forEach(btn => {
@@ -1015,7 +1086,59 @@ const RIGHT_SIDEBAR_SCRIPT = `
 
   if (!sidebarRoot) return null;
 
-  const rightTagged = tagInteractives(sidebarRoot, 'right', true, true);
+  // Only tag control elements (tab bar, action buttons), NOT content body.
+  // Content body must remain untagged so text selection works for commenting.
+  // Strategy: find the tab bar row (contains [data-tab-id] buttons) and tag
+  // only that row + any sibling control rows above the content panel.
+  const rightTagged = [];
+  let rightIdx = 0;
+
+  // Find the tab bar — the closest ancestor of [data-tab-id] buttons that is
+  // a direct child of sidebarRoot
+  const tabBtns = sidebarRoot.querySelectorAll('[data-tab-id]');
+  const controlBars = new Set();
+  tabBtns.forEach(btn => {
+    let el = btn;
+    while (el.parentElement && el.parentElement !== sidebarRoot) {
+      el = el.parentElement;
+    }
+    if (el.parentElement === sidebarRoot) controlBars.add(el);
+  });
+
+  // Also find the close button's bar
+  const closeBtn = sidebarRoot.querySelector('[data-testid="close-aux-pane"]');
+  if (closeBtn) {
+    let el = closeBtn;
+    while (el.parentElement && el.parentElement !== sidebarRoot) {
+      el = el.parentElement;
+    }
+    if (el.parentElement === sidebarRoot) controlBars.add(el);
+  }
+
+  // Tag interactive elements only inside control bars
+  controlBars.forEach(bar => {
+    bar.querySelectorAll('button, a, [role="button"]').forEach(el => {
+      const text = (el.textContent || '').trim();
+      el.setAttribute('data-ag-click-id', 'right:' + rightIdx);
+      el.setAttribute('data-ag-click-label', text.substring(0, 50));
+      rightIdx++;
+      rightTagged.push(el);
+    });
+  });
+
+  // If no control bars found (layout changed), fall back to tagging only
+  // [data-tab-id] buttons and close button directly
+  if (controlBars.size === 0) {
+    sidebarRoot.querySelectorAll('[data-tab-id], [data-testid="close-aux-pane"]').forEach(el => {
+      if (el.hasAttribute('data-ag-click-id')) return;
+      const text = (el.textContent || '').trim();
+      el.setAttribute('data-ag-click-id', 'right:' + rightIdx);
+      el.setAttribute('data-ag-click-label', text.substring(0, 50));
+      rightIdx++;
+      rightTagged.push(el);
+    });
+  }
+
   const rightClone = sidebarRoot.cloneNode(true);
   untagAll(rightTagged);
   return rightClone.outerHTML;
@@ -1498,6 +1621,8 @@ app.get('/snapshot', (req, res) => {
     environmentName: cachedSnapshot.environmentName || null,
     branchName: cachedSnapshot.branchName || null,
     modelName: cachedSnapshot.modelName || null,
+    isSubagentView: cachedSnapshot.isSubagentView || false,
+    parentConversationName: cachedSnapshot.parentConversationName || null,
     runningTasksHtml: cachedSnapshot.runningTasksHtml || null,
     scheduledTasksHtml: cachedSnapshot.scheduledTasksHtml || null,
     scheduledTasksDialogHtml: cachedSnapshot.scheduledTasksDialogHtml || null,
@@ -1766,6 +1891,55 @@ app.post('/dismiss-settings', async (req, res) => {
   }
 });
 
+// --- Restart Antigravity (kill + relaunch the desktop app) ---
+app.post('/restart-antigravity', async (req, res) => {
+  try {
+    // Find the Antigravity Electron process PID
+    // pgrep doesn't work on macOS Electron — must use ps aux (see ONBOARDING.md gotcha)
+    let pid = null;
+    try {
+      const psOutput = execSync('ps aux', { encoding: 'utf8' });
+      for (const line of psOutput.split('\n')) {
+        if (line.includes('Antigravity.app/Contents/MacOS/Antigravity') && !line.includes('grep')) {
+          pid = parseInt(line.trim().split(/\s+/)[1], 10);
+          break;
+        }
+      }
+    } catch (e) {
+      log('Restart', 'Failed to find Antigravity process:', e.message);
+      return res.json({ ok: false, reason: 'process_not_found' });
+    }
+
+    if (!pid) {
+      log('Restart', 'Antigravity process not found');
+      return res.json({ ok: false, reason: 'process_not_found' });
+    }
+
+    log('Restart', `Killing Antigravity (PID ${pid})...`);
+    track('restart_antigravity');
+
+    // Graceful kill
+    try { process.kill(pid, 'SIGTERM'); } catch (e) {
+      log('Restart', 'Kill failed:', e.message);
+      return res.json({ ok: false, reason: 'kill_failed' });
+    }
+
+    // Wait for process to die, then relaunch
+    setTimeout(() => {
+      log('Restart', 'Relaunching Antigravity...');
+      exec('open -a Antigravity', (err) => {
+        if (err) log('Restart', 'Relaunch error:', err.message);
+        else log('Restart', 'Relaunch command sent');
+      });
+    }, 1500);
+
+    res.json({ ok: true });
+  } catch (e) {
+    log('Restart', 'Unexpected error:', e.message);
+    res.status(500).json({ ok: false, reason: e.message });
+  }
+});
+
 // --- Click Proxy (forward clicks to real AG DOM) ---
 // Click IDs are prefixed: chat:N, left:N, right:N
 // --- Client Telemetry Endpoint ---
@@ -1781,6 +1955,7 @@ app.post('/telemetry', (req, res) => {
     'voice_input_used', 'artifact_viewed', 'client_error',
     'model_changed', 'branch_changed', 'worktree_changed',
     'quick_action_used',
+    'hard_refresh',
   ]);
   if (!allowed.has(event)) {
     return res.status(400).json({ error: 'unknown event' });
