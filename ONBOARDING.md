@@ -51,14 +51,14 @@
 | Self-signed SSL certs (auto-generated, gitignored) | `certs/` |
 | PWA manifest (home screen icon + app metadata) | `public/manifest.json` |
 | Multi-worktree hub (dev-only proxy) | `hub.js` |
-| Hub: Antigravity restart + status detection | `hub.js` — search `handleRestartAntigravity` and `antigravityRunning` |
-| Hub: Restart main server (kill + pull + restart) | `hub.js` — search `handleRestartMain` |
 | Hub: Icon cache-busting (content hash) | `hub.js` — search `ICON_HASH` and `fileHash` |
-| Main server watchdog + auto-updater (cron scripts) | `scripts/watchdog.sh`, `scripts/updater.sh`, `scripts/hub-watchdog.sh`, `scripts/tunnel-watchdog.sh` |
+| Main server watchdog + auto-updater (cron) | `scripts/main-watchdog.sh` |
+| Hub watchdog + auto-updater (cron) | `scripts/hub-watchdog.sh` |
+| Cloudflare tunnel watchdog (cron) | `scripts/tunnel-watchdog.sh` |
 | Voice input (shared factory for main + new session mic) | `public/js/app.js` — search `createVoiceInput` |
 | Anonymous usage telemetry (Firestore REST, opt-out, installId) | `src/telemetry.js` |
-| Telemetry operations (querying, schema, Firebase project) | `.telemetry/GEMINI.md` (gitignored, local only) |
 | README screenshots (product showcase) | `docs/` |
+| Push notifications (VAPID, service worker, subscription) | `server.js` — search `pushSubscriptions`; `hub.js` — search `hubPushSubscriptions`; `public/sw.js`; `public/js/app.js` — search `initPushNotifications` |
 
 ---
 
@@ -97,6 +97,8 @@
 - **Settings sidebar resizing.** The settings sidebar in AG2R is resizable via a drag handle. The width is stored in `localStorage` under `ag2r-settings-sidebar-width` and applied to the settings sidebar whenever the settings modal renders/updates.
 - **Watchdog boot-commit tracking.** Watchdog/updater scripts detect drift by comparing the commit the service booted at (`/tmp/ag2r-*-boot-commit`) against `origin/main` — NOT by comparing `HEAD` vs `origin/main`. This is because agent sessions pull latest main after committing, so HEAD advances locally and a naive comparison would see no changes. The boot-commit file is written by `hub.js handleStartMain`/`handleRestartMain` and by the watchdog scripts themselves at startup.
 - **Favicon is `ag2r-icon.png` everywhere.** There is no separate `favicon.png`. The hub, index.html, manifest, and apple-touch-icon all point to `/ag2r-icon.png`. Hub uses content-hash cache-busting (`?v=<md5>`) so browsers cache aggressively but pick up new icons on file change.
+- **iOS push requires PWA on home screen.** Web Push on iOS only works when the user has installed the PWA via "Add to Home Screen" (iOS 16.4+). Regular Safari tabs cannot receive push notifications. The app auto-subscribes on first user interaction — no UI needed.
+- **Server restart clears push subscriptions.** Push subscriptions are stored in memory (`pushSubscriptions` Map in `server.js`). On server restart, all subscriptions are lost. The client re-subscribes automatically on next page visit because `app.js` re-sends the existing browser subscription to `POST /push/subscribe` on every load.
 
 ---
 
@@ -188,7 +190,7 @@ Gotchas or decisions the next session should know.
 
 ## 🧪 Testing
 
-> The hub (`hub.js`) runs on port 3100 and is always available via `ag2r.omercanyy.com`. It auto-detects any AG2R server on ports 3000–3099.
+> The main server (`server.js`) runs on port 3000 and is user-facing at `ag2r.omercanyy.com`. The dev hub (`hub.js`) runs on port 3100 at `dev-ag2r.omercanyy.com` and auto-detects agent servers on ports 3001–3099.
 
 ### Agent testing workflow
 
@@ -200,43 +202,36 @@ Gotchas or decisions the next session should know.
 
 | Port | Reserved for |
 |------|-------------|
-| 3000 | Main branch server (started via hub "Start Main" button) |
+| 3000 | Main branch server (`ag2r.omercanyy.com`, managed by `main-watchdog.sh`) |
 | 3001–3099 | Agent worktree servers |
-| 3100 | Hub |
+| 3100 | Dev hub (`dev-ag2r.omercanyy.com`, managed by `hub-watchdog.sh`) |
 
 ### How the hub works
 
-- Scans ports 3000–3099 every 5s, identifies worktrees via process CWD
-- Landing page at `/` lists active sessions — user clicks one to enter
+- Scans ports 3001–3099 every 5s, identifies worktrees via process CWD
+- Landing page at `/` lists active dev sessions — user clicks one to enter
 - Cookie-based routing proxies all subsequent requests to the chosen session
-- Cloudflare tunnel → port 3100 → user accesses all sessions remotely
+- Cloudflare tunnel → `dev-ag2r.omercanyy.com` → port 3100
 - The app has zero awareness of the hub
 
 ---
 
 ## 🔄 Auto-Managed Hub & Main Server
 
-> The hub landing page is a **Control Panel** with two sections: an "Antigravity Desktop" status card (restart AG) and an "Active Sessions" list. The main server card has a **Restart** button (kills → pulls latest → reinstalls deps if needed → restarts). A cron job keeps the hub itself alive.
+> Three cron jobs keep everything running: `main-watchdog.sh` manages the main server (port 3000), `hub-watchdog.sh` manages the dev hub (port 3100), and `tunnel-watchdog.sh` keeps the Cloudflare tunnel alive. Each watchdog handles both health checks and auto-updates from `origin/main`.
 
-### Hub Watchdog (cron)
+### Cron Setup
 
 ```bash
 crontab -e
 
-# Add these lines to keep hub and tunnel running:
+# Add these lines:
 */5 * * * * ~/Workspace/ag2r/scripts/hub-watchdog.sh >> /tmp/ag2r-hub-watchdog.log 2>&1
+*/5 * * * * ~/Workspace/ag2r/scripts/main-watchdog.sh >> /tmp/ag2r-main-watchdog.log 2>&1
 */5 * * * * ~/Workspace/ag2r/scripts/tunnel-watchdog.sh >> /tmp/ag2r-tunnel-watchdog.log 2>&1
 ```
 
-The hub watchdog checks if the hub is responding every 5 minutes and restarts it if down. The tunnel watchdog checks if `cloudflared` is running and restarts it if not. All watchdog scripts use boot-commit tracking (see Gotchas). Once both are up, use the **Start Main** or **Restart** button from the landing page.
-
-### Optional: Server Watchdog + Auto-Updater (cron)
-
-```bash
-# Keep main server always running (optional — Start Main button is usually enough):
-*/5 * * * * ~/Workspace/ag2r/scripts/watchdog.sh >> /tmp/ag2r-watchdog.log 2>&1
-*/10 * * * * ~/Workspace/ag2r/scripts/updater.sh >> /tmp/ag2r-updater.log 2>&1
-```
+All watchdog scripts use boot-commit tracking (see Gotchas) to detect code drift.
 
 ### Configuration (environment variables)
 
