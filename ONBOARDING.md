@@ -55,10 +55,14 @@
 | Main server watchdog + auto-updater (cron) | `scripts/main-watchdog.sh` |
 | Hub watchdog + auto-updater (cron) | `scripts/hub-watchdog.sh` |
 | Cloudflare tunnel watchdog (cron) | `scripts/tunnel-watchdog.sh` |
+| Admin/telemetry server watchdog (cron) | `scripts/admin-watchdog.sh` |
 | Voice input (shared factory for main + new session mic) | `public/js/app.js` — search `createVoiceInput` |
 | Anonymous usage telemetry (Firestore REST, opt-out, installId) | `src/telemetry.js` |
 | README screenshots (product showcase) | `docs/` |
 | Push notifications (VAPID, service worker, subscription) | `server.js` — search `pushSubscriptions`; `hub.js` — search `hubPushSubscriptions`; `public/sw.js`; `public/js/app.js` — search `initPushNotifications` |
+| Restart Antigravity (sidebar button + confirmation + API) | `server.js` — search `POST /restart-antigravity`; `public/js/app.js` — search `showRestartConfirm` |
+| Hard refresh button (PWA home screen workaround) | `public/index.html` — search `refresh-btn`; `public/js/app.js` — search `refreshBtn` |
+| Subagent view (detection, back button, yellow border) | `public/js/app.js` — search `isInSubagentView`; `server.js` — search `isSubagentView`; `public/css/style.css` — search `subagent` |
 
 ---
 
@@ -73,6 +77,7 @@
 - **`div` inside `span`/`p`.** AG2.0 nests block elements inside inline elements for file-type icons. Browsers auto-close the inline parent, causing line breaks. Capture script converts nested `<div>` to `<span style="display: inline-flex">`.
 - **CDP overrides are minimal.** We stripped all CSS overrides (colors, spacing, code blocks, etc.) to let AG2.0's own injected CSS handle styling. Only scrollbar hiding and broken image suppression remain in our CSS.
 - **Never wipe cached content.** If snapshot capture returns null (no chat container found), the server keeps the last valid snapshot. The client never clears `chatContent.innerHTML` based on a failed selector check.
+- **Subagent view uses client-side tracking, not DOM detection.** Server-side breadcrumb detection (`isSubagentView` in CAPTURE_SCRIPT) is unreliable — AG's breadcrumb bar isn't always a sibling of `conversation-view`. Instead, the client sets `isInSubagentView = true` when the user clicks a task name, and resets it when clicking a sidebar conversation or the back button. The server-side detection remains as a fallback.
 - **Auth is env-var driven, not IP-based.** `AUTH_ENABLED=false` (default in `.env`) disables auth entirely — no login screen. The `ag2r()` shell function passes `AUTH_ENABLED=true` for production/tunnel use. Feature branch testing never needs auth.
 - **Right sidebar is on-demand, not polled.** The right sidebar HTML is NOT included in continuous snapshot polling (too heavy — can be 100KB+). Instead, `CAPTURE_SCRIPT` extracts a lightweight `sidebarSignature` (tab IDs + active tab, ~50 bytes). The full sidebar HTML is fetched via `GET /right-sidebar` when the user opens the panel. The client auto-refreshes when the signature changes while the sidebar is open. If the sidebar is closed on the host, `GET /right-sidebar` will automatically click `toggle-aux-sidebar` to open it before capturing.
 - **Right sidebar selector is fragile.** The AG right panel is found via `data-tab-id` buttons and `close-aux-pane` testid in `RIGHT_SIDEBAR_SCRIPT`. There are no stable container IDs. If AG's layout changes, the sidebar capture may fail silently (returns null). Use `GET /discover` to debug.
@@ -99,6 +104,7 @@
 - **Favicon is `ag2r-icon.png` everywhere.** There is no separate `favicon.png`. The hub, index.html, manifest, and apple-touch-icon all point to `/ag2r-icon.png`. Hub uses content-hash cache-busting (`?v=<md5>`) so browsers cache aggressively but pick up new icons on file change.
 - **iOS push requires PWA on home screen.** Web Push on iOS only works when the user has installed the PWA via "Add to Home Screen" (iOS 16.4+). Regular Safari tabs cannot receive push notifications. The app auto-subscribes on first user interaction — no UI needed.
 - **Server restart clears push subscriptions.** Push subscriptions are stored in memory (`pushSubscriptions` Map in `server.js`). On server restart, all subscriptions are lost. The client re-subscribes automatically on next page visit because `app.js` re-sends the existing browser subscription to `POST /push/subscribe` on every load.
+- **CDP port is auto-discovered.** AG app uses `--remote-debugging-port=0` (random port assigned by OS). AG2R reads the actual port from `~/Library/Application Support/Antigravity/DevToolsActivePort` at connect time, falling back to `CDP_PORT` env var. If CDP connection fails after an AG restart, the port changed — AG2R's reconnect loop will re-read the file automatically.
 
 ---
 
@@ -205,6 +211,7 @@ Gotchas or decisions the next session should know.
 | 3000 | Main branch server (`ag2r.omercanyy.com`, managed by `main-watchdog.sh`) |
 | 3001–3099 | Agent worktree servers |
 | 3100 | Dev hub (`dev-ag2r.omercanyy.com`, managed by `hub-watchdog.sh`) |
+| 3200 | Admin/telemetry server (managed by `admin-watchdog.sh`) |
 
 ### How the hub works
 
@@ -218,7 +225,7 @@ Gotchas or decisions the next session should know.
 
 ## 🔄 Auto-Managed Hub & Main Server
 
-> Three cron jobs keep everything running: `main-watchdog.sh` manages the main server (port 3000), `hub-watchdog.sh` manages the dev hub (port 3100), and `tunnel-watchdog.sh` keeps the Cloudflare tunnel alive. Each watchdog handles both health checks and auto-updates from `origin/main`.
+> Four cron jobs keep everything running: `main-watchdog.sh` manages the main server (port 3000), `hub-watchdog.sh` manages the dev hub (port 3100), `admin-watchdog.sh` manages the telemetry admin server (port 3200), and `tunnel-watchdog.sh` keeps the Cloudflare tunnel alive. Each watchdog handles both health checks and auto-updates from `origin/main`.
 
 ### Cron Setup
 
@@ -229,6 +236,7 @@ crontab -e
 */5 * * * * ~/Workspace/ag2r/scripts/hub-watchdog.sh >> /tmp/ag2r-hub-watchdog.log 2>&1
 */5 * * * * ~/Workspace/ag2r/scripts/main-watchdog.sh >> /tmp/ag2r-main-watchdog.log 2>&1
 */5 * * * * ~/Workspace/ag2r/scripts/tunnel-watchdog.sh >> /tmp/ag2r-tunnel-watchdog.log 2>&1
+*/5 * * * * ~/Workspace/ag2r/scripts/admin-watchdog.sh >> /tmp/ag2r-admin-watchdog.log 2>&1
 ```
 
 All watchdog scripts use boot-commit tracking (see Gotchas) to detect code drift.
@@ -240,6 +248,7 @@ All watchdog scripts use boot-commit tracking (see Gotchas) to detect code drift
 | `AG2R_MAIN_DIR` | `~/Workspace/ag2r` | Path to main repo |
 | `AG2R_MAIN_PORT` | `3000` | Port for main server |
 | `HUB_PORT` | `3100` | Port for the hub |
+| `ADMIN_PORT` | `3200` | Port for the admin/telemetry server |
 | `AG2R_LOG` | `/tmp/ag2r-main.log` | Server stdout/stderr log |
 
 

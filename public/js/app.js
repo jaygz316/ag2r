@@ -105,6 +105,12 @@ const permissionContent = document.getElementById('permission-content');
 const settingsOverlay = document.getElementById('settings-overlay');
 const settingsContent = document.getElementById('settings-content');
 const settingsBack = document.getElementById('settings-back');
+// Restart confirmation modal
+const restartConfirm = document.getElementById('restart-confirm');
+const restartCancel = document.getElementById('restart-cancel');
+const restartGo = document.getElementById('restart-go');
+// Header refresh button
+const refreshBtn = document.getElementById('refresh-btn');
 // Scheduled Tasks overlay
 const scheduledTasksOverlay = document.getElementById('scheduled-tasks-overlay');
 const scheduledTasksContent = document.getElementById('scheduled-tasks-content');
@@ -124,6 +130,12 @@ const runningTasksHeader = document.getElementById('running-tasks-header');
 const runningTasksList = document.getElementById('running-tasks-list');
 const runningTasksCount = document.getElementById('running-tasks-count');
 let runningTasksCollapsed = false;
+// Subagent view bar
+const subagentBar = document.getElementById('subagent-bar');
+const subagentBackBtn = document.getElementById('subagent-back-btn');
+const subagentParentName = document.getElementById('subagent-parent-name');
+let isInSubagentView = false;   // Client-side tracking: set true when user clicks a task name
+let subagentViewTaskName = '';  // Name of the subagent being viewed
 // Suppression: ignore stale dialog/dropdown snapshots for a short window after user dismisses
 let overlayDismissedAt = 0;
 
@@ -150,6 +162,45 @@ runningTasksHeader.addEventListener('click', () => {
   runningTasksList.classList.toggle('collapsed', runningTasksCollapsed);
   runningTasks.querySelector('.running-tasks-arrow')
     ?.classList.toggle('rotated', runningTasksCollapsed);
+});
+
+// Subagent back button: navigate back to parent conversation
+// Clicks the first link/button in AG's breadcrumb bar above the conversation-view
+subagentBackBtn.addEventListener('click', async () => {
+  subagentBackBtn.style.opacity = '0.5';
+  subagentBackBtn.style.pointerEvents = 'none';
+  // Reset client-side flag first
+  isInSubagentView = false;
+  subagentViewTaskName = '';
+  try {
+    // Click AG's breadcrumb/back link to navigate back to parent
+    await fetchAPI('/eval', {
+      method: 'POST',
+      body: JSON.stringify({
+        script: `(() => {
+          // Strategy 1: Click breadcrumb back link above conversation-view
+          const cv = document.querySelector('[data-testid="conversation-view"]') ||
+                     document.querySelector('.scrollbar-hide[class*="overflow-y-auto"]');
+          if (cv && cv.parentElement) {
+            for (const child of cv.parentElement.children) {
+              if (child === cv) break;
+              const link = child.querySelector('a, button, [role="link"], [class*="cursor-pointer"]');
+              if (link) { link.click(); return { ok: true, strategy: 'breadcrumb' }; }
+            }
+          }
+          // Strategy 2: Click browser back button equivalent
+          window.history.back();
+          return { ok: true, strategy: 'history_back' };
+        })()`
+      }),
+    });
+  } catch {}
+  setTimeout(() => {
+    subagentBackBtn.style.opacity = '';
+    subagentBackBtn.style.pointerEvents = '';
+  }, 500);
+  setTimeout(loadSnapshot, 300);
+  setTimeout(loadSnapshot, 1000);
 });
 
 // ─────────────────────────────────────────────
@@ -366,9 +417,22 @@ async function loadSnapshot() {
       }
 
       // Hide bottom input bar + quick actions on new session page (it has its own input)
-      const hideBottomBar = data.isNewSessionPage;
+      const hideBottomBar = data.isNewSessionPage || data.isSubagentView || isInSubagentView;
       inputBar.classList.toggle('hidden', hideBottomBar);
       if (hideBottomBar) quickActions.classList.add('hidden');
+
+      // Subagent view: show back bar + yellow border indicator
+      // Uses client-side tracking (isInSubagentView) OR server-side detection as fallback
+      const showSubagentUI = isInSubagentView || data.isSubagentView;
+      if (showSubagentUI) {
+        const displayName = subagentViewTaskName || data.parentConversationName || 'Parent';
+        subagentParentName.textContent = displayName;
+        subagentBar.classList.remove('hidden');
+        chatArea.classList.add('subagent-view');
+      } else {
+        subagentBar.classList.add('hidden');
+        chatArea.classList.remove('subagent-view');
+      }
 
       // Add mobile copy buttons to code blocks (deferred to avoid forced reflow after innerHTML)
       requestAnimationFrame(() => addMobileCopyButtons());
@@ -688,82 +752,94 @@ async function loadSnapshot() {
         const tempDiv = document.createElement('div');
         tempDiv.innerHTML = data.runningTasksHtml;
 
-        // Extract header text (e.g., "1 task running")
-        const headerBtn = tempDiv.querySelector('button');
-        const headerSpan = headerBtn?.querySelector('span');
-        runningTasksCount.textContent = headerSpan ? headerSpan.textContent.trim() : 'Tasks running';
-
         // Extract individual task rows
-        const taskRows = tempDiv.querySelectorAll('.font-mono');
         const allButtons = tempDiv.querySelectorAll('[data-ag-click-id]');
-
-        // Build a map: for each task row, find its name button click ID and stop button click ID
-        // Button order in capture: header toggle (task:0), then for each task row:
-        //   task name button (task:1, task:3, ...), stop button (task:2, task:4, ...)
-        let rowsHtml = '';
         const buttonArray = Array.from(allButtons);
 
-        // Skip the first button (header toggle, task:0), then pair remaining buttons
-        for (let i = 1; i < buttonArray.length; i += 2) {
-          const nameBtn = buttonArray[i];
-          const stopBtn = buttonArray[i + 1];
-          const nameClickId = nameBtn?.dataset?.agClickId || '';
-          const nameLabel = nameBtn?.dataset?.agClickLabel || '';
-          const stopClickId = stopBtn?.dataset?.agClickId || '';
-          const stopLabel = stopBtn?.dataset?.agClickLabel || '';
+        // Defense-in-depth: real task sections have >= 3 tagged buttons
+        // (1 header toggle + N name/stop pairs). If AG sends a structural
+        // wrapper with no real tasks, treat as "no tasks".
+        if (buttonArray.length < 3) {
+          runningTasks.classList.add('hidden');
+          runningTasks.dataset.lastHtml = '';
+        } else {
+          // Extract header text (e.g., "1 task running")
+          const headerBtn = tempDiv.querySelector('button');
+          const headerSpan = headerBtn?.querySelector('span');
+          runningTasksCount.textContent = headerSpan ? headerSpan.textContent.trim() : 'Tasks running';
 
-          // Extract task name from the font-mono span inside the name button
-          const monoSpan = nameBtn?.querySelector('.font-mono');
-          const taskName = monoSpan ? monoSpan.textContent.trim() : (nameLabel || 'Task');
+          // Build a map: for each task row, find its name button click ID and stop button click ID
+          // Button order in capture: header toggle (task:0), then for each task row:
+          //   task name button (task:1, task:3, ...), stop button (task:2, task:4, ...)
+          let rowsHtml = '';
 
-          rowsHtml += `
-            <div class="running-task-row">
-              <button class="running-task-name" data-ag-click-id="${nameClickId}" data-ag-click-label="${nameLabel}">
-                <div class="running-task-spinner"></div>
-                <span>${taskName}</span>
-              </button>
-              <button class="running-task-stop" data-ag-click-id="${stopClickId}" data-ag-click-label="${stopLabel}" aria-label="Stop task">
-                <span class="material-symbols-rounded" style="font-size:18px">stop_circle</span>
-              </button>
-            </div>
-          `;
-        }
+          // Skip the first button (header toggle, task:0), then pair remaining buttons
+          for (let i = 1; i < buttonArray.length; i += 2) {
+            const nameBtn = buttonArray[i];
+            const stopBtn = buttonArray[i + 1];
+            const nameClickId = nameBtn?.dataset?.agClickId || '';
+            const nameLabel = nameBtn?.dataset?.agClickLabel || '';
+            const stopClickId = stopBtn?.dataset?.agClickId || '';
+            const stopLabel = stopBtn?.dataset?.agClickLabel || '';
 
-        runningTasksList.innerHTML = rowsHtml;
+            // Extract task name from the font-mono span inside the name button
+            const monoSpan = nameBtn?.querySelector('.font-mono');
+            const taskName = monoSpan ? monoSpan.textContent.trim() : (nameLabel || 'Task');
 
-        // Wire click proxying for task name (navigate) and stop (kill)
-        runningTasksList.querySelectorAll('[data-ag-click-id]').forEach(btn => {
-          const clickId = btn.dataset.agClickId;
-          const clickLabel = btn.dataset.agClickLabel;
-          const isNameBtn = btn.classList.contains('running-task-name');
-          btn.removeAttribute('data-ag-click-id');
-          btn.addEventListener('click', async () => {
-            btn.style.opacity = '0.5';
-            btn.style.pointerEvents = 'none';
-            try {
-              await fetchAPI('/click', {
-                method: 'POST',
-                body: JSON.stringify({ clickId, label: clickLabel }),
-              });
-            } catch {}
-            // Task name click → open right sidebar to show terminal output
-            if (isNameBtn) openRightSidebar();
-            setTimeout(() => {
-              btn.style.opacity = '';
-              btn.style.pointerEvents = '';
-            }, 500);
-            // Refresh snapshot to pick up changes
-            setTimeout(loadSnapshot, 300);
-            setTimeout(loadSnapshot, 1000);
+            rowsHtml += `
+              <div class="running-task-row">
+                <button class="running-task-name" data-ag-click-id="${nameClickId}" data-ag-click-label="${nameLabel}">
+                  <div class="running-task-spinner"></div>
+                  <span>${taskName}</span>
+                </button>
+                <button class="running-task-stop" data-ag-click-id="${stopClickId}" data-ag-click-label="${stopLabel}" aria-label="Stop task">
+                  <span class="material-symbols-rounded" style="font-size:18px">stop_circle</span>
+                </button>
+              </div>
+            `;
+          }
+
+          runningTasksList.innerHTML = rowsHtml;
+
+          // Wire click proxying for task name (navigate) and stop (kill)
+          runningTasksList.querySelectorAll('[data-ag-click-id]').forEach(btn => {
+            const clickId = btn.dataset.agClickId;
+            const clickLabel = btn.dataset.agClickLabel;
+            const isNameBtn = btn.classList.contains('running-task-name');
+            btn.removeAttribute('data-ag-click-id');
+            btn.addEventListener('click', async () => {
+              btn.style.opacity = '0.5';
+              btn.style.pointerEvents = 'none';
+              try {
+                await fetchAPI('/click', {
+                  method: 'POST',
+                  body: JSON.stringify({ clickId, label: clickLabel }),
+                });
+              } catch {}
+              // Task name click → enter subagent view mode
+              // The click proxy navigates AG to the subagent conversation.
+              if (isNameBtn) {
+                const nameSpan = btn.querySelector('span');
+                isInSubagentView = true;
+                subagentViewTaskName = nameSpan ? nameSpan.textContent.trim() : 'Subagent';
+              }
+              setTimeout(() => {
+                btn.style.opacity = '';
+                btn.style.pointerEvents = '';
+              }, 500);
+              // Refresh snapshot to pick up the subagent conversation view
+              setTimeout(loadSnapshot, 300);
+              setTimeout(loadSnapshot, 1000);
+            });
           });
-        });
 
-        // Restore collapse state
-        runningTasksList.classList.toggle('collapsed', runningTasksCollapsed);
-        runningTasks.querySelector('.running-tasks-arrow')
-          ?.classList.toggle('rotated', runningTasksCollapsed);
+          // Restore collapse state
+          runningTasksList.classList.toggle('collapsed', runningTasksCollapsed);
+          runningTasks.querySelector('.running-tasks-arrow')
+            ?.classList.toggle('rotated', runningTasksCollapsed);
+          runningTasks.classList.remove('hidden');
+        }
       }
-      runningTasks.classList.remove('hidden');
     } else {
       runningTasks.classList.add('hidden');
       runningTasks.dataset.lastHtml = '';
@@ -1501,6 +1577,50 @@ settingsBack.addEventListener('click', () => {
   fetchAPI('/dismiss-settings', { method: 'POST' }).catch(() => {});
 });
 
+// Refresh button — hard reload for PWA (no pull-to-refresh on home screen)
+refreshBtn.addEventListener('click', () => {
+  track('hard_refresh');
+  location.reload();
+});
+
+// Restart Antigravity — confirmation modal + API call
+function showRestartConfirm() {
+  restartGo.disabled = false;
+  restartGo.textContent = 'Restart';
+  restartConfirm.classList.remove('hidden');
+}
+
+restartCancel.addEventListener('click', () => {
+  restartConfirm.classList.add('hidden');
+});
+
+// Dismiss on backdrop tap
+restartConfirm.querySelector('.restart-confirm-backdrop').addEventListener('click', () => {
+  restartConfirm.classList.add('hidden');
+});
+
+restartGo.addEventListener('click', async () => {
+  restartGo.disabled = true;
+  restartGo.textContent = 'Restarting...';
+  try {
+    const res = await fetchAPI('/restart-antigravity', { method: 'POST' });
+    const data = await res.json();
+    if (data.ok) {
+      // Success — AG will die, CDP disconnects, auto-reconnect kicks in
+      // Dismiss modal after a moment so the user sees the state change
+      setTimeout(() => {
+        restartConfirm.classList.add('hidden');
+      }, 2000);
+    } else {
+      restartGo.textContent = 'Failed — try again';
+      restartGo.disabled = false;
+    }
+  } catch {
+    restartGo.textContent = 'Failed — try again';
+    restartGo.disabled = false;
+  }
+});
+
 // Scheduled Tasks back button — detail view goes back to list, list view navigates to conversation
 scheduledTasksBack.addEventListener('click', async () => {
   try {
@@ -1880,6 +2000,32 @@ function renderSidebar(container, html) {
         el.style.visibility = 'visible';
       }
     });
+
+    // ── Inject native AG2R actions after Settings ──
+    // Only for the left sidebar — inject our own buttons after AG's Settings button
+    if (container === leftSidebarContent) {
+      const settingsEl = container.querySelector('[data-ag-click-label="Settings"]');
+      const target = settingsEl || container; // fallback: append to bottom
+      const restartHtml = `
+        <button class="ag2r-restart-btn" id="ag2r-restart-trigger">
+          <span class="material-symbols-rounded">restart_alt</span>
+          Restart Antigravity
+        </button>
+      `;
+      if (settingsEl) {
+        settingsEl.insertAdjacentHTML('afterend', restartHtml);
+      } else {
+        container.insertAdjacentHTML('beforeend', restartHtml);
+      }
+      // Wire the injected button
+      const restartTrigger = container.querySelector('#ag2r-restart-trigger');
+      if (restartTrigger) {
+        restartTrigger.addEventListener('click', () => {
+          closeLeftSidebar();
+          showRestartConfirm();
+        });
+      }
+    }
   }
 }
 
@@ -2002,7 +2148,14 @@ function addClickProxyHandlers(container) {
         const elClass = (el.className || '').toString();
         const isConversationRow = elClass.includes('min-h-[32px]');
         const isScheduledTasks = label === 'Scheduled Tasks';
-        if (isConversationRow || isScheduledTasks) closeLeftSidebar();
+        if (isConversationRow || isScheduledTasks) {
+          closeLeftSidebar();
+          // Reset subagent view when navigating to a different conversation
+          if (isConversationRow) {
+            isInSubagentView = false;
+            subagentViewTaskName = '';
+          }
+        }
       }
 
       // Close dropdown overlay after any dropdown/dialog/scheduled-tasks-portal action
