@@ -350,12 +350,17 @@ export const CAPTURE_SCRIPT = `
   }
 
   // -- 13. Detect subagent view --
-  // When viewing a subagent conversation, AG renders a breadcrumb/navigation bar
-  // above the conversation-view container. Detect this by looking for visible
-  // siblings of the container that contain clickable back links.
+  // Primary signal: AG removes the inputBox entirely when viewing a subagent conversation.
+  // This is state-based and survives page refresh (unlike breadcrumb detection alone).
+  // Secondary signal: breadcrumb bar above the conversation container (for parent name).
   let isSubagentView = false;
   let parentConversationName = '';
   try {
+    const inputBox = document.getElementById('antigravity.agentSidePanelInputBox');
+    if (!inputBox && !isNewSessionPage && container) {
+      isSubagentView = true;
+    }
+    // Breadcrumb detection: extract parent conversation name from navigation bar
     if (!isNewSessionPage && container) {
       const cvParent = container.parentElement;
       if (cvParent) {
@@ -385,6 +390,47 @@ export const CAPTURE_SCRIPT = `
     console.debug('[AG2R] Subagent detection error:', e.message);
   }
 
-  return { html, css, agentRunning, scrollInfo, leftSidebarHtml, sidebarSignature, isNewSessionPage, isSubagentView, parentConversationName, dropdownHtml, dialogHtml, settingsHtml, activeArtifactUri, activeFileUri, permissionHtml, environmentName, branchName, modelName };
+  // -- 13b. Capture subagent info panel --
+  // When in subagent view, AG renders a "cannot prompt subagents" message and
+  // "Open overview" button somewhere in the page. Search for it and capture.
+  let subagentInfoHtml = null;
+  if (isSubagentView) {
+    try {
+      // Find the narrowest container with "cannot prompt" or "open overview" text
+      const allDivs = document.querySelectorAll('div');
+      let infoPanel = null;
+      for (const div of allDivs) {
+        const txt = div.textContent.trim().toLowerCase();
+        if ((txt.includes('cannot') && txt.includes('prompt')) || 
+            (txt.includes('open') && txt.includes('overview'))) {
+          // Prefer the narrowest (most specific) container
+          if (!infoPanel || (infoPanel.contains(div) && div !== infoPanel)) {
+            infoPanel = div;
+          }
+        }
+      }
+      if (infoPanel) {
+        // Tag interactive elements for click proxying
+        let subIdx = 0;
+        const subTagged = [];
+        infoPanel.querySelectorAll('button, a, [role="button"]').forEach(el => {
+          el.setAttribute('data-ag-click-id', 'subinfo:' + subIdx);
+          el.setAttribute('data-ag-click-label', (el.textContent || '').trim().substring(0, 80));
+          subIdx++;
+          subTagged.push(el);
+        });
+        const subClone = infoPanel.cloneNode(true);
+        subTagged.forEach(el => {
+          el.removeAttribute('data-ag-click-id');
+          el.removeAttribute('data-ag-click-label');
+        });
+        subagentInfoHtml = subClone.outerHTML;
+      }
+    } catch (e) {
+      console.debug('[AG2R] Subagent info capture error:', e.message);
+    }
+  }
+
+  return { html, css, agentRunning, scrollInfo, leftSidebarHtml, sidebarSignature, isNewSessionPage, isSubagentView, parentConversationName, subagentInfoHtml, dropdownHtml, dialogHtml, settingsHtml, activeArtifactUri, activeFileUri, permissionHtml, environmentName, branchName, modelName };
 })()
 `;
