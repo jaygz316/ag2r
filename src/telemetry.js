@@ -12,6 +12,7 @@ import { fileURLToPath } from 'url';
 import { randomUUID } from 'crypto';
 import { execSync } from 'child_process';
 import os from 'os';
+import { CONFIG_DIR, ensureConfigDir, isDev } from './paths.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
@@ -50,14 +51,9 @@ function loadConfig() {
 // Install ID (persistent, anonymous)
 // Stored in ~/.config/ag2r/ (XDG convention) so all worktrees
 // and clones on the same machine share a single identity.
+// Config dir resolution → src/paths.js
 // ─────────────────────────────────────────────
 
-const CONFIG_DIR = path.join(
-  os.platform() === 'win32'
-    ? (process.env.APPDATA || path.join(os.homedir(), 'AppData', 'Roaming'))
-    : (process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')),
-  'ag2r'
-);
 const ID_FILE = path.join(CONFIG_DIR, 'telemetry-id');
 const LEGACY_ID_FILE = path.join(PROJECT_ROOT, '.ag2r-telemetry-id');
 
@@ -89,7 +85,7 @@ function getInstallId() {
 
 function writeIdFile(id) {
   try {
-    fs.mkdirSync(CONFIG_DIR, { recursive: true });
+    ensureConfigDir();
     fs.writeFileSync(ID_FILE, id + '\n');
   } catch {
     // Non-critical — use ephemeral ID this session
@@ -175,6 +171,7 @@ function buildFirestoreDoc(event, payload) {
   const doc = {
     event,
     installId,
+    isDev: isDev(),
     ...appMeta,
     ...payload,
     timestamp: new Date().toISOString(),
@@ -253,7 +250,7 @@ let eventCounts = {};
 
 /**
  * Track an event. Fire-and-forget — never throws, never blocks.
- * @param {string} event - Event name (e.g., 'message_sent', 'cdp_disconnected')
+ * @param {string} event - Event name (e.g., 'message_sent', 'cdp_connect_failed')
  * @param {object} [payload] - Optional metadata (no PII!)
  */
 export function track(event, payload = {}) {
