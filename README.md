@@ -22,7 +22,7 @@ A lightweight mobile remote interface for monitoring and interacting with [Antig
 ### Prerequisites
 
 - Node.js 18+
-- Antigravity running (CDP is enabled by default — AG2R auto-discovers the debug port)
+- Antigravity launched with CDP enabled: `open -a Antigravity --args --remote-debugging-port=9000`
 
 ### Setup
 
@@ -217,6 +217,26 @@ Get notified on your phone when the session needs permission approval — even w
 - **Stop generation** — cancel a running generation with the stop button
 - **Auto-reconnect** — seamless reconnection when connection drops
 - **Cookie-based auth** — enter passcode once, stays logged in for 30 days
+
+---
+
+## 🐛 Debug Mode
+
+Start the server with `AG2R_DEBUG=1` to enable verbose logging:
+
+```bash
+AG2R_DEBUG=1 node server.js
+```
+
+When active, key client events (message sends, click proxying, WebSocket lifecycle) are relayed to the server and printed as a unified timestamped log stream:
+
+```
+[2026-06-14T00:30:00.000Z CLIENT] sendMessage-entry isSending=false text="fix the bug" images=0
+[2026-06-14T00:30:00.500Z SERVER] Click Proxying click id=chat:5 label="Undo"
+[2026-06-14T00:30:01.200Z CLIENT] sendMessage-exit
+```
+
+Useful for diagnosing mobile-specific bugs (double-submission, click failures) where you can't see the browser console.
 
 ---
 
