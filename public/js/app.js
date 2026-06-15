@@ -12,6 +12,7 @@ let isRendering = false;
 let isSending = false;
 let userScrolledAway = false;
 let debugMode = false;
+let featureFlags = {}; // populated from server on WS connect
 
 // Telemetry: previous snapshot values for change detection
 let _prevModelName = null;
@@ -280,9 +281,19 @@ function connectWebSocket() {
         case 'connection':
           cdpConnected = data.cdpConnected;
           if (data.debugMode !== undefined) debugMode = data.debugMode;
+          if (data.featureFlags) featureFlags = data.featureFlags;
           updateConnectionStatus(cdpConnected ? 'connected' : 'reconnecting');
           if (!cdpConnected) {
             updateEmptyState('Waiting for Antigravity connection...');
+          }
+          // Eager coffee link injection — appears immediately on WS connect
+          if (featureFlags.showCoffeeLink && !leftSidebarContent.querySelector('.ag2r-coffee-sidebar-btn')) {
+            leftSidebarContent.insertAdjacentHTML('beforeend',
+              `<a class="ag2r-coffee-sidebar-btn" href="https://buymeacoffee.com/omercanyy" target="_blank">
+                <span class="material-symbols-rounded">local_cafe</span>
+                Buy me a coffee
+              </a>`);
+            leftSidebarContent.querySelector('.ag2r-coffee-sidebar-btn')?.addEventListener('click', () => track('coffee_link_clicked'));
           }
           break;
 
@@ -2032,16 +2043,24 @@ function renderSidebar(container, html) {
     if (container === leftSidebarContent) {
       const settingsEl = container.querySelector('[data-ag-click-label="Settings"]');
       const target = settingsEl || container; // fallback: append to bottom
-      const restartHtml = `
+      let injectHtml = `
         <button class="ag2r-restart-btn" id="ag2r-restart-trigger">
           <span class="material-symbols-rounded">restart_alt</span>
           Restart Antigravity
         </button>
       `;
+      if (featureFlags.showCoffeeLink) {
+        injectHtml += `
+          <a class="ag2r-coffee-sidebar-btn" href="https://buymeacoffee.com/omercanyy" target="_blank">
+            <span class="material-symbols-rounded">local_cafe</span>
+            Buy me a coffee
+          </a>
+        `;
+      }
       if (settingsEl) {
-        settingsEl.insertAdjacentHTML('afterend', restartHtml);
+        settingsEl.insertAdjacentHTML('afterend', injectHtml);
       } else {
-        container.insertAdjacentHTML('beforeend', restartHtml);
+        container.insertAdjacentHTML('beforeend', injectHtml);
       }
       // Wire the injected button
       const restartTrigger = container.querySelector('#ag2r-restart-trigger');
@@ -2050,6 +2069,10 @@ function renderSidebar(container, html) {
           closeLeftSidebar();
           showRestartConfirm();
         });
+      }
+      const coffeeLink = container.querySelector('.ag2r-coffee-sidebar-btn');
+      if (coffeeLink) {
+        coffeeLink.addEventListener('click', () => track('coffee_link_clicked'));
       }
     }
   }
