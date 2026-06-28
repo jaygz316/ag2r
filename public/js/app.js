@@ -2475,7 +2475,7 @@ function updateActiveArtifact(data) {
 // Android's native selection toolbar appears on long-press. We coexist with it
 // by using `selectionchange` (fires AFTER Android finalizes selection) instead
 // of `touchend` (fires BEFORE selection is ready). Desktop uses `mouseup` for
-// fast response. See ONBOARDING.md gotcha: "Android selection coexistence".
+// fast response. Android's native toolbar requires special handling — see comments below.
 
 // Show/position FAB for the current selection, if valid
 function showCommentFabForSelection() {

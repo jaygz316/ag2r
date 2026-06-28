@@ -1091,7 +1091,7 @@ app.post('/dismiss-settings', async (req, res) => {
 app.post('/restart-antigravity', async (req, res) => {
   try {
     // Find the Antigravity Electron process PID
-    // pgrep doesn't work on macOS Electron — must use ps aux (see ONBOARDING.md gotcha)
+    // pgrep doesn't work on macOS Electron — must use ps aux (see GEMINI.md gotcha)
     let pid = null;
     try {
       const psOutput = execSync('ps aux', { encoding: 'utf8' });

@@ -308,7 +308,7 @@ git pull origin next
 
 ## 🤖 For AI Agents
 
-> Start with **[ONBOARDING.md](./ONBOARDING.md)** for the full technical reference (architecture, file maps, workflows). Your behavioral rules are in **[GEMINI.md](./GEMINI.md)**.
+> Your behavioral rules and technical reference are in **[GEMINI.md](./GEMINI.md)**.
 
 ## 📊 Telemetry
 

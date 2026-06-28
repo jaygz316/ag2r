@@ -1,7 +1,7 @@
 // src/paths.js — Centralized persistent config directory
 // All worktrees and server instances share ~/.config/ag2r/ (XDG convention)
 // so VAPID keys, push subscriptions, and install IDs stay consistent.
-// See ONBOARDING.md context map for pointer.
+// Shared config directory: ~/.config/ag2r/ — persists across server restarts
 
 import fs from 'fs';
 import path from 'path';

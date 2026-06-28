@@ -14,7 +14,7 @@ log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"; }
 
 AG_BINARY="Antigravity.app/Contents/MacOS/Antigravity"
 
-# pgrep doesn't work for Electron on macOS — must use ps aux (see ONBOARDING.md gotcha)
+# pgrep doesn't work for Electron on macOS — must use ps aux (see GEMINI.md gotcha)
 AG_LINE=$(ps aux | grep "$AG_BINARY" | grep -v grep || true)
 
 if [ -z "$AG_LINE" ]; then
