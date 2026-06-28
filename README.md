@@ -2,7 +2,7 @@
 
 # AG2R — Antigravity 2.0 Remote
 
-[![Antigravity Compatibility](https://img.shields.io/badge/Last_tested_with_Antigravity-v2.1.4-blue?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48dGV4dCB4PSIyIiB5PSIxMyIgZm9udC1zaXplPSIxMyI+8J+aqDwvdGV4dD48L3N2Zz4=)](https://antigravity.google/releases)
+[![Antigravity Compatibility](https://img.shields.io/badge/Last_tested_with_Antigravity-v2.1.4-blue?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48dGV4dCB4PSIyIiB5PSIxMyIgZm9udC1zaXplPSIxMyI+8J+aqDwvdGV4dD48L3N2Zz4=)](https://antigravity.google/releases) <sub>Not working? See [Branching Strategy](#-branching-strategy)</sub>
 
 A lightweight mobile remote interface for monitoring and interacting with [Antigravity](https://antigravity.dev) AI coding sessions from your phone — on Wi-Fi, hotspot, or anywhere in the world.
 
@@ -250,16 +250,36 @@ If you have a dedicated tunnel with a stable URL, cron-based watchdog scripts ca
 
 ---
 
-## 🌿 Branches
+## 🌿 Branching Strategy
 
-| Branch | Purpose |
-|--------|---------|
-| `main` | Stable — works with the AG version shown in the badge above |
-| `next` | Bleeding edge — being tested against an upcoming AG version |
+| Branch | Purpose | Stability |
+|--------|---------|----------|
+| `main` | Current stable version — works with the AG version shown in the badge above | ✅ Stable |
+| `prev-stable` | Previous stable version — frozen snapshot of `main` before the latest merge | ✅ Stable |
+| `next` | Bleeding edge — being tested against an upcoming AG version | ⚠️ May break |
 
-When a new Antigravity version ships, `next` is used as the integration branch to adapt AG2R. Individual fixes branch off `next` and merge back into it. Once stable, `next` gets merged into `main` and the compatibility badge is updated.
+### How it works
 
-**Want early access?**
+When a new Antigravity version ships, the developer's workflow is:
+
+1. Work on `next` to adapt AG2R to the new AG version
+2. Once `next` is working, snapshot `main` → `prev-stable` and merge `next` → `main`
+3. Continue fixing bugs on `next` and merging to `main` until stable
+4. When things settle, `main` and `next` converge to the same state
+
+### Which branch should I use?
+
+**Start with `main`.** It works with the AG version shown in the badge at the top.
+
+If `main` is broken (typically right after a new AG release), use `prev-stable` — it's a frozen snapshot that works with the previous AG version. Install that AG version and use `prev-stable` until `main` is updated.
+
+```bash
+# Fall back to the previous stable version
+git checkout prev-stable
+git pull origin prev-stable
+```
+
+If you want the absolute latest (and don't mind occasional breakage):
 
 ```bash
 git checkout next
@@ -267,7 +287,7 @@ git pull origin next
 ```
 
 > [!WARNING]
-> The `next` branch may be unstable. Use `main` for a reliable experience.
+> The `next` branch may be unstable. Use `main` for a reliable experience, or `prev-stable` as a fallback.
 
 ---
 
