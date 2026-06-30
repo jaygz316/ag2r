@@ -99,6 +99,8 @@ const VAPID_KEYS_PATH = getConfigPath('vapid-keys.json');
 const LEGACY_VAPID_KEYS_PATH = path.join(__dirname, 'vapid-keys.json');
 const PUSH_SUBS_PATH = getConfigPath('push-subscriptions.json');
 const pushSubscriptions = new Map(); // endpoint → { ...PushSubscription, origin }
+let lastPushSentAt = 0;
+const PUSH_COOLDOWN_MS = 30_000; // 30 seconds between push notifications
 
 // Load or generate VAPID keys on startup
 function initVapid() {
@@ -152,8 +154,13 @@ loadSubscriptions();
 
 // Send push notification to all subscribers
 async function sendPushToAll(payload) {
-  if (pushSubscriptions.size === 0) return;
+  if (pushSubscriptions.size === 0) {
+    log('Push', 'No subscribers — skipping send');
+    return;
+  }
+  log('Push', `Sending to ${pushSubscriptions.size} subscriber(s): ${payload.body}`);
   const stale = [];
+  let sent = 0;
   for (const [endpoint, sub] of pushSubscriptions) {
     // Resolve notification click URL per-subscription from stored origin
     const base = sub.origin || TUNNEL_URL || `https://localhost:${PORT}`;
@@ -161,21 +168,30 @@ async function sendPushToAll(payload) {
     const body = JSON.stringify({ ...payload, url, icon: appIconPath });
     try {
       await webpush.sendNotification(sub, body);
+      sent++;
+      log('Push', `✓ Delivered to ${endpoint.substring(0, 60)}...`);
     } catch (err) {
-      if (err.statusCode === 410 || err.statusCode === 404 || err.statusCode === 403) {
+      if (err.statusCode === 410) {
+        // 410 Gone — subscription permanently invalid, safe to remove
         stale.push(endpoint);
+        log('Push', `✗ 410 Gone — removing ${endpoint.substring(0, 60)}...`);
       } else {
-        console.debug(`[Push] Send error: ${err.statusCode || 'N/A'} — ${err.body || err.message}`);
+        // 403/404 can be transient (VAPID rotation, FCM hiccup) — keep subscription
+        log('Push', `✗ ${err.statusCode || 'N/A'} — keeping subscription (${err.body || err.message})`);
       }
     }
   }
   stale.forEach(ep => pushSubscriptions.delete(ep));
   if (stale.length > 0) saveSubscriptions();
-  log('Push', `Sent to ${pushSubscriptions.size} subscriber(s), removed ${stale.length} stale`);
+  log('Push', `Done: ${sent} delivered, ${stale.length} removed`);
 }
 
 // Check if any conversation needs attention and send a push notification.
+// Simple 30-second cooldown prevents hammering push services on every poll cycle.
 function checkAttentionState(snapshot) {
+  const now = Date.now();
+  if (now - lastPushSentAt < PUSH_COOLDOWN_MS) return;
+
   const hasPermission = !!snapshot.permissionHtml;
   const attentionItems = (snapshot.sidebarAttentionItems || [])
     .filter(item => item.type !== 'completed');
@@ -186,6 +202,8 @@ function checkAttentionState(snapshot) {
   if (types.has('question')) body = 'An agent has a question for you';
   else if (types.has('command') || hasPermission) body = 'A command needs your approval';
 
+  lastPushSentAt = now;
+  log('Push', `Attention detected — sending (cooldown ${PUSH_COOLDOWN_MS / 1000}s)`);
   sendPushToAll({
     title: appName,
     body,
@@ -1496,6 +1514,26 @@ app.post('/push/unsubscribe', (req, res) => {
   }
   log('Push', `Unsubscribed (${pushSubscriptions.size} total)`);
   res.json({ ok: true });
+});
+
+app.post('/push/test', (req, res) => {
+  log('Push', 'Test notification triggered');
+  sendPushToAll({
+    title: appName,
+    body: 'Test notification from AG2R',
+    tag: 'ag2r-test',
+  });
+  res.json({ ok: true, subscribers: pushSubscriptions.size });
+});
+
+app.get('/push/status', (req, res) => {
+  res.json({
+    subscribers: pushSubscriptions.size,
+    endpoints: [...pushSubscriptions.keys()].map(ep => ep.substring(0, 80) + '...'),
+    vapidPublicKey: vapidKeys.publicKey,
+    lastPushSentAt: lastPushSentAt ? new Date(lastPushSentAt).toISOString() : null,
+    cooldownMs: PUSH_COOLDOWN_MS,
+  });
 });
 
 // --- Health ---

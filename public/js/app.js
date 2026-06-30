@@ -2694,9 +2694,65 @@ updateActionButton();
 // ─────────────────────────────────────────────
 // Push Notifications — Auto-Subscribe
 // ─────────────────────────────────────────────
+
+// Visible on-screen push log (temp debug — no console access on phone)
+const _pushLogEl = (() => {
+  const panel = document.createElement('div');
+  panel.id = 'push-log-panel';
+  panel.style.cssText = 'display:none;position:fixed;bottom:0;left:0;right:0;max-height:50vh;overflow-y:auto;background:#111;color:#0f0;font:11px/1.4 monospace;padding:8px 12px;z-index:9999;border-top:2px solid #0f0;';
+  const header = document.createElement('div');
+  header.style.cssText = 'display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;';
+  header.innerHTML = '<b style="color:#0f0">Push Debug Log</b>';
+  const testBtn = document.createElement('button');
+  testBtn.textContent = '🔔 Send Test';
+  testBtn.style.cssText = 'background:#222;color:#0f0;border:1px solid #0f0;padding:4px 10px;border-radius:4px;font:12px monospace;cursor:pointer;';
+  testBtn.onclick = async () => {
+    pushLog('Sending test notification...');
+    try {
+      const resp = await fetch('/push/test', { method: 'POST' });
+      const data = await resp.json();
+      pushLog('Test result: subs=' + data.subscribers + ' ok=' + data.ok);
+    } catch (e) {
+      pushLog('Test error: ' + e.message);
+    }
+  };
+  header.appendChild(testBtn);
+  panel.appendChild(header);
+  const log = document.createElement('div');
+  log.id = 'push-log-entries';
+  panel.appendChild(log);
+  document.body.appendChild(panel);
+  return log;
+})();
+
+function pushLog(msg) {
+  console.log('[Push]', msg);
+  const line = document.createElement('div');
+  const ts = new Date().toLocaleTimeString();
+  line.textContent = ts + ' ' + msg;
+  // Color errors red, success green
+  if (msg.includes('ERROR') || msg.includes('error') || msg.includes('denied') || msg.includes('rejected')) {
+    line.style.color = '#f44';
+  } else if (msg.includes('✓')) {
+    line.style.color = '#4f4';
+  }
+  _pushLogEl.appendChild(line);
+  _pushLogEl.scrollTop = _pushLogEl.scrollHeight;
+}
+
 function pushDebug(msg) {
   debugLog('push', msg);
 }
+
+// Bell button toggles the push log panel
+const pushTestBtn = document.getElementById('push-test-btn');
+if (pushTestBtn) {
+  pushTestBtn.addEventListener('click', () => {
+    const panel = document.getElementById('push-log-panel');
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  });
+}
+
 async function checkVapidKeyMatch(subscription) {
   try {
     const res = await fetch('/push/vapid-public-key');
@@ -2712,59 +2768,59 @@ async function checkVapidKeyMatch(subscription) {
 }
 async function initPushNotifications() {
   if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-    pushDebug('Not supported');
+    pushLog('Not supported (no SW or PushManager)');
     return;
   }
 
   try {
-    pushDebug('Registering SW...');
+    pushLog('Registering service worker...');
     const registration = await navigator.serviceWorker.register('/sw.js');
-    pushDebug('SW ok');
+    pushLog('Service worker registered ✓');
 
     const existing = await registration.pushManager.getSubscription();
     if (existing) {
       // Check if the subscription's VAPID key matches the server's current key
       const keyMatch = await checkVapidKeyMatch(existing);
       if (keyMatch) {
-        pushDebug('Already subscribed, re-sending');
+        pushLog('Existing subscription valid — re-sending to server');
         await sendSubscription(existing);
-        pushDebug('Done ✓');
+        pushLog('Subscription synced ✓');
         return;
       }
       // VAPID key mismatch — stale subscription from old keys
-      pushDebug('VAPID key mismatch, re-subscribing...');
+      pushLog('VAPID key mismatch — re-subscribing with current keys');
       await existing.unsubscribe();
       await subscribePush(registration);
-      pushDebug('Re-subscribed with current keys ✓');
+      pushLog('Re-subscribed ✓');
       return;
     }
 
-    pushDebug('perm=' + Notification.permission);
+    pushLog('No existing subscription. Permission=' + Notification.permission);
     if (Notification.permission === 'denied') {
-      pushDebug('Denied, skip');
+      pushLog('Permission denied — cannot subscribe');
       return;
     }
 
     if (Notification.permission === 'granted') {
-      pushDebug('Granted, subscribing...');
+      pushLog('Permission granted — subscribing...');
       await subscribePush(registration);
-      pushDebug('Done ✓');
+      pushLog('Subscribed ✓');
       return;
     }
 
     // Only request on genuine user gesture — capture phase fires before
     // any inner stopPropagation() calls. Never request without gesture,
     // as Chrome's "quiet UI" will auto-deny and permanently block the domain.
-    pushDebug('Waiting gesture...');
+    pushLog('Permission not yet granted — waiting for user gesture to request');
     const handler = async () => {
       document.removeEventListener('touchstart', handler, true);
       document.removeEventListener('mousedown', handler, true);
-      pushDebug('Gesture! Requesting...');
+      pushLog('User gesture detected — requesting permission...');
       const result = await Notification.requestPermission();
-      pushDebug('Result=' + result);
+      pushLog('Permission result: ' + result);
       if (result === 'granted') {
         await subscribePush(registration);
-        pushDebug('Done ✓');
+        pushLog('Subscribed ✓');
       } else if (result === 'default') {
         document.addEventListener('touchstart', handler, { capture: true, once: true });
         document.addEventListener('mousedown', handler, { capture: true, once: true });
@@ -2773,7 +2829,7 @@ async function initPushNotifications() {
     document.addEventListener('touchstart', handler, { capture: true, once: true });
     document.addEventListener('mousedown', handler, { capture: true, once: true });
   } catch (e) {
-    pushDebug('Error: ' + e.message);
+    pushLog('ERROR: ' + e.message);
   }
 }
 
@@ -2781,26 +2837,35 @@ async function subscribePush(registration) {
   try {
     const res = await fetch('/push/vapid-public-key');
     const { publicKey } = await res.json();
+    pushDebug('VAPID key fetched: ' + publicKey.substring(0, 20) + '...');
 
     const subscription = await registration.pushManager.subscribe({
       userVisibleOnly: true,
       applicationServerKey: urlBase64ToUint8Array(publicKey),
     });
 
+    pushLog('Browser subscription created — endpoint: ' + subscription.endpoint.substring(0, 60) + '...');
     await sendSubscription(subscription);
   } catch (e) {
-    pushDebug('Sub error: ' + e.message);
+    pushLog('Subscribe error: ' + e.message);
   }
 }
 
 async function sendSubscription(subscription) {
   try {
-    await fetch('/push/subscribe', {
+    const resp = await fetch('/push/subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(subscription),
     });
-  } catch {}
+    if (resp.ok) {
+      pushLog('Subscription sent to server ✓');
+    } else {
+      pushLog('Server rejected subscription: ' + resp.status);
+    }
+  } catch (e) {
+    pushLog('Failed to send subscription to server: ' + e.message);
+  }
 }
 
 function urlBase64ToUint8Array(base64String) {
