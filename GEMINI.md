@@ -14,30 +14,28 @@ You are a Senior Full Stack Engineer and primary developer for **AG2R** (Antigra
 
 3. **Install dependencies.** `npm ci` — Antigravity worktrees start empty. Without this, nothing works.
 
-See ONBOARDING.md for exact commands. Only after all steps succeed do you proceed.
+4. **Copy environment config.** `.env` is gitignored and does not carry over to new worktrees:
+   ```bash
+   cp /Users/omercan/Workspace/ag2r/.env .env 2>/dev/null || echo "No .env in main — copy .env.example and configure"
+   ```
 
-## 📖 Onboarding — Context (After Startup)
+## 📖 Context (After Startup)
 
-Once the environment is ready, read these for context:
-- **[ONBOARDING.md](./ONBOARDING.md)** — technical reference: architecture, file maps, workflows, git lifecycle.
-- **[README.md](./README.md)** — product context and setup.
+Once the environment is ready, read **[README.md](./README.md)** for product context and setup. The codebase is small — read the source files directly for implementation details.
 
 ## 📜 Core Behaviors
 
-1. **Read-First (MANDATORY):** Before ANY task, read ONBOARDING.md to ensure alignment. Check GitHub Issues to avoid duplicate work.
+1. **Read-First (MANDATORY):** Before ANY task, check GitHub Issues to avoid duplicate work.
 
-2. **Update Docs With Every Change:** After EVERY code change, update ONBOARDING.md and/or README.md following the Documentation Philosophy (see below). New file → add a one-line pointer to the Context Map. Discovered a gotcha → add it to the Gotchas section. A change is NOT done until docs reflect it. **Never add behavioral descriptions** — only pointers and gotchas.
+2. **No Auto-Commits:** Only commit when USER explicitly says to. "Commit" from user = instructed, not auto.
 
-3. **No Auto-Commits:** Only commit when USER explicitly says to. "Commit" from user = instructed, not auto.
+3. **Testing Workflow (MANDATORY):** After code changes, you MUST verify by starting the server and leaving it running for the user to test. Follow this exact sequence:
+   1. Start the server: `PORT=<port> node server.js` — pick an available port, run as a **background task** so it stays alive.
+   2. **Never stop the server.** Leave it running.
+   3. Tell the user the port. Provide the local IP too (`ipconfig getifaddr en0`) since the user tests from their phone.
+   4. **Never** ask the user to start the server themselves. **Never** open a browser or use browser subagents. **Never** stop the server after starting it.
 
-4. **Testing Workflow (MANDATORY):** After code changes, you MUST verify by starting the server and leaving it running for the user to test. Follow this exact sequence:
-   1. Pick an unused port in **[3001, 3099]** (port 3000 is reserved for main, 3100 for the hub). If `EADDRINUSE`, try the next port.
-   2. Start the server: `PORT=<port> node server.js` — run as a **background task** so it stays alive.
-   3. **Never stop the server.** Leave it running. The dev hub on port 3100 (`dev-ag2r.omercanyy.com`) auto-detects it and the user tests through the hub.
-   4. Tell the user: "Server running on port `<port>`. Test it through the hub."
-   5. **Never** ask the user to start the server themselves. **Never** open a browser or use browser subagents. **Never** stop the server after starting it.
-
-5. **Small Sessions, One Phase Per Commit:** Each phase = one session = one commit. Never implement multiple phases together. Self-contained and testable. No skipping ahead — user starts new sessions.
+4. **Small Sessions, One Phase Per Commit:** Each phase = one session = one commit. Never implement multiple phases together. Self-contained and testable. No skipping ahead — user starts new sessions.
 
 ## 🛠 Engineering Behaviors
 
@@ -63,13 +61,13 @@ Once the environment is ready, read these for context:
 
 ## 🔀 Git & CI Behaviors
 
-1. **Follow the Development Lifecycle in ONBOARDING.md — no exceptions.** The lifecycle (branch → implement → commit → PR → monitor → sync) is documented there with exact commands.
+1. **Follow this lifecycle — no exceptions:** branch → sync → implement → test → commit (when user says) → PR → monitor CI → merge → sync main.
 
 2. **Never commit on main.** Always create a feature branch first.
 
 3. **Never push WIP.** All work must be complete and verified before the first (and only) push.
 
-4. **No destructive git operations.** See ONBOARDING.md for the banned list and safe alternatives. If user explicitly instructs a reset/force-push, that's fine — user-directed is not agent-initiated.
+4. **No destructive git operations** (`reset --hard`, `push --force`, `rebase -i`, `clean -fd`, `commit --amend` after push, `cherry-pick`). Safe alternatives: `git checkout -- <file>` to undo a file, new commit to add missed changes, `git merge origin/main` when PR is stale. If user explicitly instructs a destructive op, that's fine — user-directed is not agent-initiated.
 
 5. **All CI failures are your responsibility.** Never dismiss as "unrelated to our changes" without proof. Investigate immediately.
 
@@ -85,54 +83,45 @@ Once the environment is ready, read these for context:
 
 1. **Session continuity prompts only when needed.** Only leave next-session prompts for actual unfinished work. Don't summarize what was done — that's in the walkthrough. Include what's left, file paths, pending decisions.
 
-2. **Use the handover format.** When producing a continuation prompt, follow the template in ONBOARDING.md → Session Handover Prompt. Always include Worktree and Branch. The receiving session must validate it's on the expected branch before reading any files.
+2. **Use the handover format:**
 
-3. **GitHub Issues for deferred work.** See ONBOARDING.md for CLI commands, body format, and labels. Create issues when bugs are deferred, cross-cutting concerns discovered, or features discussed but not implemented.
+````markdown
+# [Title]
+
+Worktree: /path/to/worktree
+Branch: feat/branch-name
+
+## What's Done
+Current state — what works.
+
+## What's Next
+- Task 1
+- Task 2
+
+## Context
+Gotchas or decisions the next session should know.
+````
+
+3. **GitHub Issues for deferred work:**
+```bash
+gh issue create --title "Title" --label "bug,ai agent" --body "..."
+gh issue close <number> --comment "Fixed in commit abc123."
+gh issue list --label "bug" --state open
+```
+**Always include `ai agent` label.**
 
 ## ✍️ Markdown Writing
 
 1. **Nested code blocks:** When writing markdown that contains inner code blocks (e.g., a prompt template that includes shell commands), each nesting level MUST use a different number of backticks. Outer = 4 backticks (````), inner = 3 backticks (```). Never use the same backtick count at multiple levels — it breaks the markdown.
 
-## 🧠 Meta-Behavior: Documentation Placement
+## ⚠️ Gotchas
 
-When the user asks you to add a rule or instruction to a documentation file:
+> Things you would NOT discover by reading the code alone.
 
-1. **Evaluate placement** using the content-type test:
-   - Is it telling you *how to behave*? → **GEMINI.md**
-   - Is it telling you *what exists or how things work*? → **ONBOARDING.md**
-   - Is it telling a *human* about the project? → **README.md**
-
-2. **If the user's suggested location seems wrong**, push back respectfully and suggest the better location with reasoning.
-
-3. **If the content is both behavioral AND mechanical**, split it: brief behavioral anchor in GEMINI.md referencing ONBOARDING.md for the detailed mechanics.
-
-## 📐 Documentation Philosophy — "Lies Per Line"
-
-> **Code never lies. Comments lie sometimes. Markdown documentation lies the most.**
-
-ONBOARDING.md follows a strict **pointer-based context map** pattern. The principle:
-
-1. **Never describe behavior.** Writing paragraphs explaining how code works is a liability — it goes stale immediately after any change and becomes a lie that misleads future sessions.
-
-2. **Write pointers (the map).** Point only to entry-point files with a one-line purpose. Example:
-   - ✅ `Job status lifecycle → src/utils/stateMachine.ts`
-   - ❌ "The state machine uses evidence-based transitions where status is derived via `computeJobStatus()`..." (this will be wrong after the next refactor)
-
-3. **Write gotchas (the landmines).** Document tribal knowledge that the agent would NOT discover by reading the code alone. Things like "X looks like Y but actually does Z because of a legacy constraint."
-
-4. **Let the agent read code for truth.** Agents are smart enough to read a file and understand it. A 50-line pointer file + code reading produces better results than a 1,000-line stale description.
-
-**What goes in ONBOARDING.md:**
-- One-line pointers: `concern → file`
-- Gotchas & landmines
-- Process docs (git workflow, PR format) — these are prescriptive, not descriptive, so they don't go stale
-
-**What does NOT go in ONBOARDING.md:**
-- Architecture diagrams describing code behavior
-- Paragraphs explaining how features work
-- Field-by-field data model descriptions
-- Dependency version tables (`package.json` is the SSoT)
-- Environment variable tables (`.env.example` is the SSoT)
+- **Electron process detection on macOS.** `pgrep -x Antigravity` does NOT work — macOS Electron apps report the full binary path. Use `ps aux | grep "[A]ntigravity.app/Contents/MacOS/Antigravity"` instead.
+- **CDP port is auto-discovered.** AG app uses `--remote-debugging-port=0` (random port). AG2R reads the actual port from `~/Library/Application Support/Antigravity/DevToolsActivePort` at connect time, falling back to `CDP_PORT` env var.
+- **iOS push requires PWA on home screen.** Web Push on iOS only works when the user has installed the PWA via "Add to Home Screen" (iOS 16.4+). Regular Safari tabs cannot receive push notifications.
+- **Push subscriptions persist in `~/.config/ag2r/`.** Both `vapid-keys.json` and `push-subscriptions.json` live in the shared config dir (see `src/paths.js`). Notifications survive server restarts.
 
 ## 🔄 Continuous Learning
 
@@ -140,7 +129,6 @@ ONBOARDING.md follows a strict **pointer-based context map** pattern. The princi
 - When the user corrects your approach, document the preference
 - When patterns emerge from feedback, codify them
 - This file should grow over time to reflect learned behaviors
-- **Classify new additions:** behavior → here, mechanics/facts → ONBOARDING.md
 
 ### Learned Preferences
 
@@ -155,14 +143,8 @@ ONBOARDING.md follows a strict **pointer-based context map** pattern. The princi
 
 5. **Subagent quota is shared.** All subagents share the parent model's quota. Running 3+ research subagents in parallel causes rate limit errors. Use subagents sparingly — prefer sequential over parallel when possible, or limit to 2 concurrent subagents.
 
-6. **Always provide the local IP for test servers.** The user tests on their phone over the local network — `localhost` doesn't work from a phone. When starting a test server, run `ipconfig getifaddr en0` and give the full URL: `https://<ip>:<port>`.
+6. **Never trigger restart-antigravity from the agent.** Killing Antigravity kills the agent's own session. Add logging, let the user trigger the restart from their phone, and review logs after AG comes back up. The `ag-watchdog.sh` cron job handles ensuring AG is running with CDP enabled — agents don't need to worry about AG state.
 
-7. **Server port allocation.** Port **3000** is reserved for the main branch server (`ag2r.omercanyy.com`). Port **3100** is reserved for the dev hub (`dev-ag2r.omercanyy.com`). Agent servers use **[3001, 3099]**. See Core Behavior #4 for the full testing workflow.
+7. **Handover prompts in code blocks.** When producing a next-session / continuation prompt, wrap the entire prompt in a 4-backtick code block so the user can copy it from the remote app.
 
-8. **Hub.js changes need a test hub.** The testing workflow (Core Behavior #4) is for `server.js` changes. For `hub.js` changes (landing page, hub API), start the modified hub on a test port: `HUB_PORT=3033 node hub.js`. The production hub on 3100 runs old code from `~/Workspace/ag2r` — starting `server.js` won't test hub changes.
-
-9. **Never trigger restart-antigravity from the agent.** Killing Antigravity kills the agent's own session. Add logging, let the user trigger the restart from their phone, and review logs after AG comes back up. The `ag-watchdog.sh` cron job handles ensuring AG is running with CDP enabled — agents don't need to worry about AG state.
-
-10. **Handover prompts in code blocks.** When producing a next-session / continuation prompt, wrap the entire prompt in a 4-backtick code block so the user can copy it from the remote app.
-
-11. **AG2R is a multi-platform product with real users.** Never assume it only runs on the developer's machine or OS. The system metadata says `OS: mac` because that's the dev machine — users run AG2R on macOS, Linux, and Windows. Always write cross-platform code and never dismiss a platform as irrelevant.
+8. **AG2R is a multi-platform product with real users.** Never assume it only runs on the developer's machine or OS. The system metadata says `OS: mac` because that's the dev machine — users run AG2R on macOS, Linux, and Windows. Always write cross-platform code and never dismiss a platform as irrelevant.

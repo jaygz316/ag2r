@@ -137,14 +137,35 @@ const subagentBar = document.getElementById('subagent-bar');
 const subagentBackBtn = document.getElementById('subagent-back-btn');
 const subagentParentName = document.getElementById('subagent-parent-name');
 let isInSubagentView = false;   // Synced from server-side detection (inputBox absence)
+let isInputBoxHidden = false;   // Synced from server-side detection (AG's input box invisible)
 
 // Subagent info panel (cannot prompt message + overview button)
 const subagentInfo = document.getElementById('subagent-info');
 // Deferred sidebar open: set true when user clicks a task name.
 // loadSnapshot checks this flag after detecting subagent vs command view.
-let pendingTaskClick = false;
+
 // Suppression: ignore stale dialog/dropdown snapshots for a short window after user dismisses
 let overlayDismissedAt = 0;
+
+// Handle ?sidebar=open URL param (from push notification clicks)
+// Opens the left sidebar so the user can see which conversation needs attention.
+const _urlParams = new URLSearchParams(window.location.search);
+if (_urlParams.get('sidebar') === 'open') {
+  // Defer until first snapshot loads (sidebar content needs to be populated)
+  let _sidebarOpenPending = true;
+  const _origLoadSnapshot = window._ag2rSidebarOpenHook = () => {
+    if (_sidebarOpenPending) {
+      _sidebarOpenPending = false;
+      openLeftSidebar();
+    }
+  };
+  // Clean URL so refresh doesn't re-trigger
+  _urlParams.delete('sidebar');
+  const cleanUrl = _urlParams.toString()
+    ? `${window.location.pathname}?${_urlParams.toString()}`
+    : window.location.pathname;
+  window.history.replaceState({}, '', cleanUrl);
+}
 
 // ─────────────────────────────────────────────
 // Dynamic Input Bar Height Tracking
@@ -178,6 +199,7 @@ subagentBackBtn.addEventListener('click', async () => {
   subagentBackBtn.style.pointerEvents = 'none';
   // Reset client-side flag first
   isInSubagentView = false;
+  isInputBoxHidden = false;
 
   try {
     // Click AG's breadcrumb/back link to navigate back to parent
@@ -299,8 +321,7 @@ function connectWebSocket() {
             agentRunning = data.agentRunning;
             updateActionButton();
             // Don't show quick actions on new session page or subagent view
-            const isOnNewSession = !!document.getElementById('ag2r-new-session-input');
-            quickActions?.classList.toggle('hidden', agentRunning || isOnNewSession || isInSubagentView);
+            quickActions?.classList.toggle('hidden', agentRunning || isInputBoxHidden);
           }
           break;
 
@@ -308,8 +329,7 @@ function connectWebSocket() {
           if (data.agentRunning !== undefined) {
             agentRunning = data.agentRunning;
             updateActionButton();
-            const isOnNewSession = !!document.getElementById('ag2r-new-session-input');
-            quickActions?.classList.toggle('hidden', agentRunning || isOnNewSession || isInSubagentView);
+            quickActions?.classList.toggle('hidden', agentRunning || isInputBoxHidden);
           }
           break;
 
@@ -452,13 +472,14 @@ async function loadSnapshot() {
         closeLeftSidebar();
       }
 
-      // Hide bottom input bar + quick actions on new session page or subagent view
-      const hideBottomBar = data.isNewSessionPage || data.isSubagentView;
+      // Hide bottom input bar when AG's input box is hidden (subagent view, etc.)
+      const hideBottomBar = data.isNewSessionPage || data.isInputBoxHidden;
       inputBar.classList.toggle('hidden', hideBottomBar);
       if (hideBottomBar) quickActions.classList.add('hidden');
 
-      // Update client-side flag from server detection (used by WS handlers)
+      // Update client-side flags from server detection (used by WS handlers)
       isInSubagentView = !!data.isSubagentView;
+      isInputBoxHidden = !!(data.isNewSessionPage || data.isInputBoxHidden);
 
       // Subagent view: show back bar + yellow border indicator + info panel
       if (data.isSubagentView) {
@@ -480,13 +501,6 @@ async function loadSnapshot() {
         subagentInfo.dataset.lastHtml = '';
       }
 
-      // Deferred task click: open sidebar only for command tasks (not subagents)
-      if (pendingTaskClick) {
-        pendingTaskClick = false;
-        if (!data.isSubagentView) {
-          openRightSidebar();
-        }
-      }
 
       // Add mobile copy buttons to code blocks (deferred to avoid forced reflow after innerHTML)
       requestAnimationFrame(() => addMobileCopyButtons());
@@ -502,15 +516,30 @@ async function loadSnapshot() {
     isRendering = true;
     renderSidebar(leftSidebarContent, data.leftSidebarHtml);
     addClickProxyHandlers(leftSidebarContent);
+    // Trigger deferred sidebar open from ?sidebar=open URL param (push notification click)
+    if (window._ag2rSidebarOpenHook) window._ag2rSidebarOpenHook();
 
-    // Right sidebar is on-demand — don't render here.
-    // Track the sidebarSignature so we know when to re-fetch.
+    // Right sidebar: mirror AG's sidebar state from snapshots.
+    // This is the same pattern as chat content — just show what AG shows.
     if (data.sidebarSignature !== undefined) {
       const sigChanged = data.sidebarSignature !== lastSidebarSignature;
       lastSidebarSignature = data.sidebarSignature;
-      // Auto-refresh sidebar if it's open and the signature changed
+      // Refresh content if sidebar is open and tabs changed
       if (sigChanged && rightSidebar.classList.contains('open')) {
         fetchRightSidebar();
+      }
+    }
+    if (data.isSidebarOpen !== undefined) {
+      const ag2rIsOpen = rightSidebar.classList.contains('open');
+      console.debug('[SidebarMirror] AG:', data.isSidebarOpen, 'AG2R:', ag2rIsOpen, 'sig:', data.sidebarSignature);
+      if (data.isSidebarOpen && !ag2rIsOpen) {
+        console.debug('[SidebarMirror] Opening AG2R sidebar');
+        openRightSidebar();
+      } else if (!data.isSidebarOpen && ag2rIsOpen) {
+        console.debug('[SidebarMirror] Closing AG2R sidebar');
+        rightSidebar.classList.remove('open');
+        rightSidebar.inert = true;
+        rightSidebarOverlay.classList.remove('visible');
       }
     }
 
@@ -892,12 +921,7 @@ async function loadSnapshot() {
                 });
               } catch {}
               // Task name click: the click proxy navigates AG.
-              // Subagent detection is handled server-side (inputBox absence).
-              // Defer sidebar decision: loadSnapshot will open sidebar only for
-              // command tasks (not subagents) after checking isSubagentView.
-              if (isNameBtn) {
-                pendingTaskClick = true;
-              }
+
               setTimeout(() => {
                 btn.style.opacity = '';
                 btn.style.pointerEvents = '';
@@ -1811,11 +1835,15 @@ function closeRightSidebar() {
   rightSidebar.classList.remove('open');
   rightSidebar.inert = true;
   rightSidebarOverlay.classList.remove('visible');
+  // Sync: close AG's sidebar too so re-clicks produce a detectable tab change
+  fetchAPI('/close-sidebar', { method: 'POST' }).catch(() => {});
 }
 
 function toggleRightSidebar() {
-  if (rightSidebar.classList.contains('open')) closeRightSidebar();
-  else openRightSidebar();
+  // Proxy to AG — snapshot mirroring handles AG2R's UI
+  fetchAPI('/toggle-sidebar', { method: 'POST' })
+    .then(() => setTimeout(loadSnapshot, 300))
+    .catch(() => {});
 }
 
 reviewToggle.addEventListener('click', toggleRightSidebar);
@@ -2228,6 +2256,16 @@ function addClickProxyHandlers(container) {
         }
         return;
       }
+
+      // Intercept external URL links — open on client device, don't proxy to AG
+      if (el.tagName === 'A') {
+        const href = el.getAttribute('href') || '';
+        if (/^https?:\/\//i.test(href)) {
+          window.open(href, '_blank', 'noopener');
+          return;
+        }
+      }
+
       el.classList.add('ag-clicking');
       let result = null;
       try {
@@ -2266,43 +2304,18 @@ function addClickProxyHandlers(container) {
         dropdownOverlay.classList.add('hidden');
       }
 
-      // "View Diff" in dialog — close modal + open right sidebar to show the diff
-      if (clickId.startsWith('dialog:') && /view\s*diff/i.test(label.trim())) {
-        setTimeout(() => openRightSidebar(), 300);
-      }
-
-      // Only open right sidebar for explicit "Review" button clicks
-      if (/^Review$/i.test(label.trim())) {
-        openRightSidebar();
-      }
-
-      // Open right sidebar when a file row click navigated to a file tab
-      if (result?.navigatedToFile) {
-        openRightSidebar();
-      }
-
-      // Fallback: if clicking an artifact/file card in chat (cursor-pointer DIV)
-      // but AG didn't navigate (panel was already showing it), still open the
-      // remote's right sidebar to show what AG already has open.
-      // Only for DIVs — buttons (thumbs up/down, etc.) should not trigger this.
-      // Skip expandable sections (e.g. "N files changed") — they expand inline.
-      if (clickId.startsWith('chat:') && !result?.navigatedToFile) {
-        const elClass = (el.className || '').toString();
-        const isExpandable = /\d+\s+files?\s+changed/i.test(label);
-        if (el.tagName === 'DIV' && elClass.includes('cursor-pointer') && !isExpandable) {
-          openRightSidebar();
-        }
+      // All sidebar open/close is handled by snapshot mirroring.
+      // Just schedule snapshot refreshes after clicks so mirroring picks up
+      // AG's state change quickly.
+      if (clickId.startsWith('chat:') || clickId.startsWith('dialog:') || clickId.startsWith('subinfo:')) {
+        setTimeout(loadSnapshot, 300);
+        setTimeout(loadSnapshot, 800);
       }
 
       // Re-fetch right sidebar after right-sidebar clicks (tab switches, etc.)
       if (clickId.startsWith('right:')) {
         setTimeout(fetchRightSidebar, 300);
         setTimeout(fetchRightSidebar, 800);
-      }
-
-      // Subagent info clicks (e.g. "Open overview") → open right sidebar
-      if (clickId.startsWith('subinfo:')) {
-        setTimeout(() => openRightSidebar(), 400);
       }
 
       // Refresh snapshots to pick up changes
@@ -2489,7 +2502,6 @@ function saveComments() {
 // Track active artifact URI from snapshots
 function updateActiveArtifact(data) {
   if (data.activeArtifactUri) {
-    // Track artifact views — deduplicate by checking if URI changed
     if (data.activeArtifactUri !== activeArtifactUri) {
       const uri = data.activeArtifactUri;
       let type = 'other';
@@ -2515,7 +2527,7 @@ function updateActiveArtifact(data) {
 // Android's native selection toolbar appears on long-press. We coexist with it
 // by using `selectionchange` (fires AFTER Android finalizes selection) instead
 // of `touchend` (fires BEFORE selection is ready). Desktop uses `mouseup` for
-// fast response. See ONBOARDING.md gotcha: "Android selection coexistence".
+// fast response. Android's native toolbar requires special handling — see comments below.
 
 // Show/position FAB for the current selection, if valid
 function showCommentFabForSelection() {

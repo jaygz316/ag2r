@@ -2,6 +2,8 @@
 
 # AG2R — Antigravity 2.0 Remote
 
+[![Antigravity Compatibility](https://img.shields.io/badge/Last_tested_with_Antigravity-v2.2.1-blue?style=for-the-badge&logo=data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxNiIgaGVpZ2h0PSIxNiIgdmlld0JveD0iMCAwIDE2IDE2Ij48dGV4dCB4PSIyIiB5PSIxMyIgZm9udC1zaXplPSIxMyI+8J+aqDwvdGV4dD48L3N2Zz4=)](https://antigravity.google/releases) <sub>Not working? See [Branching Strategy](#-branching-strategy)</sub>
+
 A lightweight mobile remote interface for monitoring and interacting with [Antigravity](https://antigravity.dev) AI coding sessions from your phone — on Wi-Fi, hotspot, or anywhere in the world.
 
 <table align="center">
@@ -244,13 +246,69 @@ Useful for diagnosing mobile-specific bugs (double-submission, click failures) w
 
 ## 🔄 Keep It Running (Optional)
 
-If you have a dedicated tunnel with a stable URL, cron-based watchdog scripts can keep AG2R and the tunnel alive and auto-update from `origin/main`. See `scripts/` for the available watchdogs (`main-watchdog.sh`, `tunnel-watchdog.sh`).
+A watchdog script can keep AG2R running and auto-update from the branch you're on. It detects the current branch, pulls new commits, and restarts the server when code changes.
+
+```bash
+# Run once to start (or add to cron for auto-recovery)
+AG2R_PORT=3000 ./scripts/watchdog.sh
+```
+
+**Cron setup** (checks every 5 minutes):
+
+```bash
+crontab -e
+# Add this line:
+*/5 * * * * cd ~/ag2r && AG2R_PORT=3000 ./scripts/watchdog.sh >> /tmp/ag2r-watchdog.log 2>&1
+```
+
+The `tunnel-watchdog.sh` script can similarly keep a Cloudflare tunnel alive.
+
+---
+
+## 🌿 Branching Strategy
+
+| Branch | Purpose | Stability |
+|--------|---------|----------|
+| `main` | Current stable version — works with the AG version shown in the badge above | ✅ Stable |
+| `prev-stable` | Previous stable version — frozen snapshot of `main` before the latest merge | ✅ Stable |
+| `next` | Bleeding edge — being tested against an upcoming AG version | ⚠️ May break |
+
+### How it works
+
+When a new Antigravity version ships, the developer's workflow is:
+
+1. Work on `next` to adapt AG2R to the new AG version
+2. Once `next` is working, snapshot `main` → `prev-stable` and merge `next` → `main`
+3. Continue fixing bugs on `next` and merging to `main` until stable
+4. When things settle, `main` and `next` converge to the same state
+
+### Which branch should I use?
+
+**Start with `main`.** It works with the AG version shown in the badge at the top.
+
+If `main` is broken (typically right after a new AG release), use `prev-stable` — it's a frozen snapshot that works with the previous AG version. Install that AG version and use `prev-stable` until `main` is updated.
+
+```bash
+# Fall back to the previous stable version
+git checkout prev-stable
+git pull origin prev-stable
+```
+
+If you want the absolute latest (and don't mind occasional breakage):
+
+```bash
+git checkout next
+git pull origin next
+```
+
+> [!WARNING]
+> The `next` branch may be unstable. Use `main` for a reliable experience, or `prev-stable` as a fallback.
 
 ---
 
 ## 🤖 For AI Agents
 
-> Start with **[ONBOARDING.md](./ONBOARDING.md)** for the full technical reference (architecture, file maps, workflows). Your behavioral rules are in **[GEMINI.md](./GEMINI.md)**.
+> Your behavioral rules and technical reference are in **[GEMINI.md](./GEMINI.md)**.
 
 ## 📊 Telemetry
 
