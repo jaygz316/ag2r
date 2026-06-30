@@ -473,13 +473,13 @@ async function loadSnapshot() {
       }
 
       // Hide bottom input bar when AG's input box is hidden (subagent view, etc.)
-      const hideBottomBar = data.isNewSessionPage || data.isInputBoxHidden;
+      const hideBottomBar = data.isNewSessionPage || data.isSubagentView;
       inputBar.classList.toggle('hidden', hideBottomBar);
       if (hideBottomBar) quickActions.classList.add('hidden');
 
       // Update client-side flags from server detection (used by WS handlers)
       isInSubagentView = !!data.isSubagentView;
-      isInputBoxHidden = !!(data.isNewSessionPage || data.isInputBoxHidden);
+      isInputBoxHidden = !!(data.isNewSessionPage || data.isSubagentView);
 
       // Subagent view: show back bar + yellow border indicator + info panel
       if (data.isSubagentView) {
