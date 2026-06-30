@@ -18,13 +18,7 @@ self.addEventListener('push', (event) => {
   };
 
   event.waitUntil(
-    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
-      // Suppress if the PWA is in the foreground (any window is focused)
-      if (windowClients.some(c => c.focused)) return;
-
-      // Replace any existing notification with the latest body
-      return self.registration.showNotification(title, options);
-    })
+    self.registration.showNotification(title, options)
   );
 });
 
