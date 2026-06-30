@@ -1,7 +1,7 @@
 #!/bin/bash
 # tunnel-watchdog.sh — Ensures the Cloudflare tunnel stays running.
 # Designed to run as a cron job every 5 minutes.
-# See ONBOARDING.md § "Auto-Managed Hub & Main Server" for setup.
+# Keeps the Cloudflare tunnel alive for ag2r.omercanyy.com.
 
 set -euo pipefail
 

@@ -44,7 +44,8 @@ import { EXPAND_LEFT_SIDEBAR_SCRIPT } from './src/cdp-scripts/expand-left-sideba
 import { buildCopyResponseScript } from './src/cdp-scripts/copy-response.js';
 import { DISMISS_SCHEDULED_TASKS_SCRIPT } from './src/cdp-scripts/dismiss-scheduled-tasks.js';
 import { DISMISS_SETTINGS_SCRIPT } from './src/cdp-scripts/dismiss-settings.js';
-import { OPEN_RIGHT_SIDEBAR_SCRIPT } from './src/cdp-scripts/open-right-sidebar.js';
+
+import { CLOSE_RIGHT_SIDEBAR_SCRIPT } from './src/cdp-scripts/close-right-sidebar.js';
 import { SELECT_OVERVIEW_TAB_SCRIPT } from './src/cdp-scripts/select-overview-tab.js';
 import { buildProxyImageScript } from './src/cdp-scripts/proxy-image.js';
 import { HAS_VISIBLE_EDITOR_SCRIPT } from './src/cdp-scripts/has-visible-editor.js';
@@ -92,6 +93,11 @@ const LEGACY_VAPID_KEYS_PATH = path.join(__dirname, 'vapid-keys.json');
 const PUSH_SUBS_PATH = getConfigPath('push-subscriptions.json');
 const pushSubscriptions = new Map(); // endpoint → PushSubscription
 let lastPermissionState = false; // tracks whether permission banner was showing
+let lastPermissionNotifyTime = 0; // timestamp of last permission push (for cooldown)
+const PERMISSION_COOLDOWN_MS = 2 * 60 * 1000; // 2 min — collapses rapid-fire command sequences
+const notifiedAttentionIds = new Set(); // conversation IDs we've already notified about
+let lastAttentionReminderTime = Date.now(); // for 2-hour reminder reset
+const ATTENTION_REMINDER_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours
 let publicOrigin = ''; // set from subscribe request's origin header
 
 // Load or generate VAPID keys on startup
@@ -166,21 +172,76 @@ async function sendPushToAll(payload) {
   log('Push', `Sent to ${pushSubscriptions.size} subscriber(s), removed ${stale.length} stale`);
 }
 
-// Check permission state and send push on transition
+// Check attention state and send push notifications
 function checkAttentionState(snapshot) {
+  // Notification URL: prefer TUNNEL_URL (stable, configured by user) over
+  // publicOrigin (fragile, lost on server restart, set from last subscribe request).
+  // TUNNEL_URL is used whenever configured — TUNNEL_ENABLED only controls proxy trust.
+  const url = TUNNEL_URL || publicOrigin || `https://localhost:${PORT}`;
+  const sidebarUrl = url + (url.includes('?') ? '&' : '?') + 'sidebar=open';
+  const now = Date.now();
+
+  // 1. Active conversation permission banner
   const hasPermission = !!snapshot.permissionHtml;
   if (hasPermission && !lastPermissionState) {
-    // Transition: no permission → permission needed
-    const url = publicOrigin || (TUNNEL_ENABLED && TUNNEL_URL ? TUNNEL_URL : `https://localhost:${PORT}`);
-    sendPushToAll({
-      title: 'AG2R — Permission needed',
-      body: 'Session is waiting for your approval',
-      url,
-      tag: 'ag2r-permission',
-    });
-    track('push_notification_sent', { reason: 'permission' });
+    if (now - lastPermissionNotifyTime >= PERMISSION_COOLDOWN_MS) {
+      sendPushToAll({
+        title: 'AG2R',
+        body: 'A command needs your approval',
+        url,
+        tag: 'ag2r-permission',
+      });
+      lastPermissionNotifyTime = now;
+      track('push_notification_sent', { reason: 'permission' });
+    } else {
+      console.debug('[Push] Permission notification suppressed (cooldown)');
+    }
   }
   lastPermissionState = hasPermission;
+
+  // 2. Sidebar-based attention detection (covers ALL conversations)
+  // capture.js returns sidebarAttentionItems: [{id, type}] where type is
+  // 'permission' (SVG icon = agent blocked) or 'completed' (just finished).
+  const items = snapshot.sidebarAttentionItems || [];
+  const actionableItems = items.filter(item => item.type !== 'completed');
+  const currentAttentionIds = new Set(actionableItems.map(item => item.id));
+  const userIsActive = wsClients.size > 0;
+
+  // 2a. Remove notified IDs that are no longer needing attention (user attended to them)
+  for (const id of notifiedAttentionIds) {
+    if (!currentAttentionIds.has(id)) notifiedAttentionIds.delete(id);
+  }
+
+  // 2b. 2-hour reminder: clear notified set so forgotten conversations re-trigger
+  if (now - lastAttentionReminderTime > ATTENTION_REMINDER_INTERVAL_MS) {
+    notifiedAttentionIds.clear();
+    lastAttentionReminderTime = now;
+  }
+
+  // 2c. Find new attention IDs we haven't notified about yet
+  const newIds = [];
+  for (const id of currentAttentionIds) {
+    if (!notifiedAttentionIds.has(id)) newIds.push(id);
+  }
+
+  // 2d. If user is away and there are new actionable items, notify (with cooldown)
+  if (!userIsActive && newIds.length > 0) {
+    if (now - lastPermissionNotifyTime >= PERMISSION_COOLDOWN_MS) {
+      for (const id of newIds) notifiedAttentionIds.add(id);
+      sendPushToAll({
+        title: 'AG2R',
+        body: 'A command needs your approval',
+        url: sidebarUrl,
+        tag: 'ag2r-attention',
+      });
+      lastPermissionNotifyTime = now;
+      track('push_notification_sent', { reason: 'sidebar_attention', newCount: newIds.length });
+    } else {
+      // Still mark as notified to avoid re-checking on next poll
+      for (const id of newIds) notifiedAttentionIds.add(id);
+      console.debug('[Push] Sidebar attention notification suppressed (cooldown)');
+    }
+  }
 }
 
 // ─────────────────────────────────────────────
@@ -665,6 +726,7 @@ function fireBurstCaptures(delays) {
             snapshot.html +
             (snapshot.leftSidebarHtml || '') +
             (snapshot.sidebarSignature || '') +
+            (snapshot.isSidebarOpen ? '1' : '0') +
             (snapshot.dropdownHtml || '') +
             (snapshot.dialogHtml || '') +
             (snapshot.settingsHtml || '') +
@@ -712,6 +774,7 @@ function startPolling() {
           snapshot.html +
           (snapshot.leftSidebarHtml || '') +
           (snapshot.sidebarSignature || '') +
+          (snapshot.isSidebarOpen ? '1' : '0') +
           (snapshot.dropdownHtml || '') +
           (snapshot.dialogHtml || '') +
           (snapshot.settingsHtml || '') +
@@ -724,6 +787,7 @@ function startPolling() {
 
         // Only broadcast and update cache when content actually changes
         if (hash !== lastSnapshotHash) {
+          console.debug('[SidebarMirror:server] isSidebarOpen:', snapshot.isSidebarOpen, 'sig:', snapshot.sidebarSignature);
           cachedSnapshot = snapshot;
           cachedSnapshot.hash = hash;
           lastSnapshotHash = hash;
@@ -908,55 +972,46 @@ app.get('/snapshot', (req, res) => {
 // --- Right Sidebar (on-demand capture) ---
 app.get('/right-sidebar', async (req, res) => {
   try {
-    let html = await evaluateInBrowser(RIGHT_SIDEBAR_SCRIPT);
-
-    if (html) {
-      return res.json({ html });
-    }
-
-    // Sidebar is closed in AG — try to open it
-    log('RightSidebar', 'Sidebar closed in AG, attempting to open...');
-    const opened = await evaluateInBrowser(OPEN_RIGHT_SIDEBAR_SCRIPT);
-
-    if (!opened) {
-      // Strategy 2: Keyboard shortcut — Cmd+Option+B (VS Code Toggle Auxiliary Bar)
-      try {
-        await cdpClient.Input.dispatchKeyEvent({
-          type: 'keyDown',
-          key: 'b',
-          code: 'KeyB',
-          modifiers: 8 + 1, // Meta(8) + Alt(1) = Cmd+Option
-          windowsVirtualKeyCode: 66,
-        });
-        await cdpClient.Input.dispatchKeyEvent({
-          type: 'keyUp',
-          key: 'b',
-          code: 'KeyB',
-          modifiers: 8 + 1,
-          windowsVirtualKeyCode: 66,
-        });
-        log('RightSidebar', 'Sent Cmd+Option+B keyboard shortcut');
-      } catch (e) {
-        log('RightSidebar', 'Keyboard shortcut failed:', e.message);
-      }
-    } else {
-      log('RightSidebar', 'Clicked toggle button');
-    }
-
-    // Wait for sidebar to render
-    await new Promise(r => setTimeout(r, 500));
-
-    // Select the Overview tab if no tab is active
-    await evaluateInBrowser(SELECT_OVERVIEW_TAB_SCRIPT);
-    await new Promise(r => setTimeout(r, 200));
-
-    // Re-try capture
-    html = await evaluateInBrowser(RIGHT_SIDEBAR_SCRIPT);
-    res.json({ html: html || null, wasOpened: true });
-
+    // Read-only: capture sidebar content if AG's sidebar is open.
+    // Never open AG's sidebar — AG2R mirrors AG's state, it doesn't drive it.
+    const html = await evaluateInBrowser(RIGHT_SIDEBAR_SCRIPT);
+    res.json({ html: html || null });
   } catch (e) {
     console.debug('[RightSidebar] Error:', e.message);
     res.json({ html: null, error: e.message });
+  }
+});
+
+// --- Close Right Sidebar (sync AG2R close with AG) ---
+app.post('/close-sidebar', async (req, res) => {
+  if (!cdpClient) {
+    return res.status(503).json({ error: 'CDP not connected' });
+  }
+  try {
+    const result = await evaluateInBrowser(CLOSE_RIGHT_SIDEBAR_SCRIPT);
+    log('CloseSidebar', result || 'already_closed');
+    res.json({ ok: true, result });
+  } catch (e) {
+    console.debug('[CloseSidebar] Error:', e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
+
+app.post('/toggle-sidebar', async (req, res) => {
+  if (!cdpClient) {
+    return res.status(503).json({ error: 'CDP not connected' });
+  }
+  try {
+    await evaluateInBrowser(`
+      (() => {
+        const btn = document.querySelector('[data-testid="toggle-aux-sidebar"]');
+        if (btn) btn.click();
+      })()
+    `);
+    res.json({ ok: true });
+  } catch (e) {
+    console.debug('[ToggleSidebar] Error:', e.message);
+    res.json({ ok: false, error: e.message });
   }
 });
 
@@ -1062,7 +1117,7 @@ app.post('/dismiss-settings', async (req, res) => {
 app.post('/restart-antigravity', async (req, res) => {
   try {
     // Find the Antigravity Electron process PID
-    // pgrep doesn't work on macOS Electron — must use ps aux (see ONBOARDING.md gotcha)
+    // pgrep doesn't work on macOS Electron — must use ps aux (see GEMINI.md gotcha)
     let pid = null;
     try {
       const psOutput = execSync('ps aux', { encoding: 'utf8' });
@@ -1665,7 +1720,7 @@ async function start() {
 
   server.listen(PORT, () => {
     log('Server', `AG2R running on https://localhost:${PORT}`);
-    if (TUNNEL_ENABLED && TUNNEL_URL) {
+    if (TUNNEL_URL) {
       log('Server', `Tunnel URL: ${TUNNEL_URL}`);
     }
     startSession();

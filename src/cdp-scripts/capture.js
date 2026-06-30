@@ -165,6 +165,7 @@ export const CAPTURE_SCRIPT = `
 
   // -- 14. Capture LEFT sidebar (bg-sidebar) --
   let leftSidebarHtml = null;
+  let sidebarAttentionItems = [];
   try {
     const leftRoot = document.querySelector('div[class*="bg-sidebar"][class*="flex-col"]');
     if (leftRoot && leftRoot.offsetParent !== null) {
@@ -172,6 +173,37 @@ export const CAPTURE_SCRIPT = `
       const leftClone = leftRoot.cloneNode(true);
       untagAll(leftTagged);
       leftSidebarHtml = leftClone.outerHTML;
+      // Extract conversation IDs that need attention, classified by type.
+      // AG uses different status indicators in the sidebar:
+      //   - SVG icon + animate-unread-ping → agent needs intervention (e.g., command permission)
+      //   - Simple CSS dot (no SVG) → agent just finished (no intervention needed)
+      // Each ping dot is inside a sidebar item whose descendant has data-testid="convo-pill-<uuid>"
+      const seenIds = new Set();
+      leftRoot.querySelectorAll('.animate-unread-ping').forEach(ping => {
+        // Walk up to the sidebar item (role="button"), then find the convo-pill testid
+        let el = ping;
+        for (let i = 0; i < 10 && el; i++) {
+          const pill = el.querySelector('[data-testid^="convo-pill-"]');
+          if (pill) {
+            const id = pill.getAttribute('data-testid').replace('convo-pill-', '');
+            if (id && !seenIds.has(id)) {
+              seenIds.add(id);
+              // Classify attention type by checking for SVG icon near the ping.
+              // The ping lives inside a status container (group-hover:invisible div).
+              // If that container has an SVG, the agent needs intervention.
+              let statusContainer = ping;
+              for (let j = 0; j < 5 && statusContainer; j++) {
+                if ((statusContainer.getAttribute('class') || '').includes('group-hover:invisible')) break;
+                statusContainer = statusContainer.parentElement;
+              }
+              const hasSvgIcon = statusContainer ? !!statusContainer.querySelector('svg') : false;
+              sidebarAttentionItems.push({ id, type: hasSvgIcon ? 'permission' : 'completed' });
+            }
+            break;
+          }
+          el = el.parentElement;
+        }
+      });
     }
   } catch (e) {
     console.debug('[AG2R] Left sidebar capture error:', e.message);
@@ -196,6 +228,12 @@ export const CAPTURE_SCRIPT = `
   } catch (e) {
     console.debug('[AG2R] Sidebar signature error:', e.message);
   }
+  // Sidebar open state: true when AG's right sidebar panel is visible.
+  // AG keeps the sidebar DOM (including data-tab-id buttons) even when closed —
+  // it slides it offscreen. Detect by checking if tab buttons are within the viewport.
+  const firstTab = document.querySelector('[data-tab-id]');
+  const isSidebarOpen = firstTab ? firstTab.getBoundingClientRect().left < window.innerWidth : false;
+  console.debug('[SidebarMirror:capture] isSidebarOpen:', isSidebarOpen, 'tab:', firstTab ? 'exists' : 'null', 'left:', firstTab?.getBoundingClientRect().left, 'vw:', window.innerWidth);
   // -- 8. Capture portal elements (dropdowns, dialogs) from body --
   // AG renders these outside #root as direct body children.
   let dropdownHtml = null;
@@ -351,31 +389,48 @@ export const CAPTURE_SCRIPT = `
 
   // -- 13. Detect subagent view --
   // Two independent signals, both required to confirm subagent view:
-  //   1. AG removes the inputBox entirely when viewing a subagent conversation.
-  //   2. A breadcrumb navigation bar appears above the conversation container.
-  // Requiring both prevents false positives during transient states (e.g., permission
-  // prompt submission briefly removes the inputBox).
+  // -- 13a. Subagent view detection --
+  // Two independent heuristics:
+  //   1. isInputBoxHidden: AG's input box is missing or invisible → hide AG2R's text box
+  //   2. isSubagentView: "Cannot send" text found → show yellow border + subagent banner
+  let isInputBoxHidden = false;
   let isSubagentView = false;
   let parentConversationName = '';
   try {
     const inputBox = document.getElementById('antigravity.agentSidePanelInputBox');
-    const noInputBox = !inputBox && !isNewSessionPage && !!container;
+    if (!inputBox) {
+      isInputBoxHidden = !isNewSessionPage && !!container;
+    } else {
+      // Input box exists in DOM — check if it's actually visible
+      isInputBoxHidden = inputBox.offsetParent === null || inputBox.getBoundingClientRect().height === 0;
+    }
 
-    // Breadcrumb detection: extract parent conversation name from navigation bar
-    let hasBreadcrumb = false;
-    if (!isNewSessionPage && container) {
+    // "Cannot send" detection: search for short-text elements that aren't inside
+    // the chat container. The "Cannot send message" label is a small UI element,
+    // not a chat message (which would be long and inside the scrollable container).
+    if (isInputBoxHidden) {
+      const candidates = document.querySelectorAll('div, span, p');
+      for (const el of candidates) {
+        if (container && container.contains(el)) continue; // skip chat content
+        const txt = (el.textContent || '').trim();
+        if (txt.length > 5 && txt.length < 100 &&
+            (txt.toLowerCase().includes('cannot send') || txt.toLowerCase().includes('cannot prompt'))) {
+          isSubagentView = true;
+          break;
+        }
+      }
+    }
+
+    // Breadcrumb: extract parent conversation name from navigation bar above container
+    if (isSubagentView && container) {
       const cvParent = container.parentElement;
       if (cvParent) {
         for (const child of cvParent.children) {
-          if (child === container) break; // Only check siblings BEFORE the container
+          if (child === container) break;
           const rect = child.getBoundingClientRect();
-          // Look for a small visible bar (breadcrumb height ~24-48px)
           if (rect.height > 8 && rect.height < 80) {
-            const links = child.querySelectorAll('a, button, [role="link"], [class*="cursor-pointer"]');
             const text = child.textContent.trim();
-            if (links.length > 0 && text.length > 0 && text.length < 300) {
-              hasBreadcrumb = true;
-              // Extract parent name from breadcrumb segments (separated by / or > or ›)
+            if (text.length > 0 && text.length < 300) {
               const parts = text.split(/[/›>]/).map(s => s.trim()).filter(Boolean);
               if (parts.length >= 2) {
                 parentConversationName = parts[parts.length - 2];
@@ -388,9 +443,7 @@ export const CAPTURE_SCRIPT = `
         }
       }
     }
-
-    // Both signals required to confirm subagent view
-    isSubagentView = noInputBox && hasBreadcrumb;
+    console.debug('[SubagentDetect] inputBox:', inputBox ? 'exists' : 'null', 'isInputBoxHidden:', isInputBoxHidden, 'isSubagentView:', isSubagentView);
   } catch (e) {
     console.debug('[AG2R] Subagent detection error:', e.message);
   }
@@ -436,6 +489,6 @@ export const CAPTURE_SCRIPT = `
     }
   }
 
-  return { html, css, agentRunning, scrollInfo, leftSidebarHtml, sidebarSignature, isNewSessionPage, isSubagentView, parentConversationName, subagentInfoHtml, dropdownHtml, dialogHtml, settingsHtml, activeArtifactUri, activeFileUri, permissionHtml, environmentName, branchName, modelName };
+  return { html, css, agentRunning, scrollInfo, leftSidebarHtml, sidebarAttentionItems, sidebarSignature, isSidebarOpen, isNewSessionPage, isInputBoxHidden, isSubagentView, parentConversationName, subagentInfoHtml, dropdownHtml, dialogHtml, settingsHtml, activeArtifactUri, activeFileUri, permissionHtml, environmentName, branchName, modelName };
 })()
 `;
