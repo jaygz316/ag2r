@@ -2723,12 +2723,19 @@ async function initPushNotifications() {
 
     const existing = await registration.pushManager.getSubscription();
     if (existing) {
-      // Always re-subscribe fresh — browser caches old endpoints that FCM may
-      // have expired (410), causing silent push failures.
-      pushDebug('Clearing old sub, re-subscribing...');
+      // Check if the subscription's VAPID key matches the server's current key
+      const keyMatch = await checkVapidKeyMatch(existing);
+      if (keyMatch) {
+        pushDebug('Already subscribed, re-sending');
+        await sendSubscription(existing);
+        pushDebug('Done ✓');
+        return;
+      }
+      // VAPID key mismatch — stale subscription from old keys
+      pushDebug('VAPID key mismatch, re-subscribing...');
       await existing.unsubscribe();
       await subscribePush(registration);
-      pushDebug('Fresh sub ✓');
+      pushDebug('Re-subscribed with current keys ✓');
       return;
     }
 
