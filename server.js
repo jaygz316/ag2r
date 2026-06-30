@@ -99,8 +99,6 @@ const VAPID_KEYS_PATH = getConfigPath('vapid-keys.json');
 const LEGACY_VAPID_KEYS_PATH = path.join(__dirname, 'vapid-keys.json');
 const PUSH_SUBS_PATH = getConfigPath('push-subscriptions.json');
 const pushSubscriptions = new Map(); // endpoint → { ...PushSubscription, origin }
-let lastNotifyTime = 0; // timestamp of last push (for cooldown)
-const NOTIFY_COOLDOWN_MS = 2 * 60 * 1000; // 2 min — collapses rapid-fire command sequences
 
 // Load or generate VAPID keys on startup
 function initVapid() {
@@ -176,38 +174,23 @@ async function sendPushToAll(payload) {
   log('Push', `Sent to ${pushSubscriptions.size} subscriber(s), removed ${stale.length} stale`);
 }
 
-// Check attention state and send push notifications.
-// Simple meta-check: needs attention + user away + cooldown → notify.
-// The service worker handles dedup (won't show if notification already visible).
+// Check if any conversation needs attention and send a push notification.
 function checkAttentionState(snapshot) {
-  // 1. Does anything need attention?
   const hasPermission = !!snapshot.permissionHtml;
   const attentionItems = (snapshot.sidebarAttentionItems || [])
     .filter(item => item.type !== 'completed');
   if (!hasPermission && attentionItems.length === 0) return;
 
-  // 2. Is the user on the app?
-  if (wsClients.size > 0) return;
-
-  // 3. Rate-limit pushes (cooldown)
-  const now = Date.now();
-  if (now - lastNotifyTime < NOTIFY_COOLDOWN_MS) return;
-  lastNotifyTime = now;
-
-  // 4. Pick notification body based on the dominant attention type.
-  // Priority: question > command > generic. If only permissionHtml, use command.
   const types = new Set(attentionItems.map(item => item.type));
   let body = 'A conversation needs your attention';
   if (types.has('question')) body = 'An agent has a question for you';
   else if (types.has('command') || hasPermission) body = 'A command needs your approval';
 
-  // 5. Send — SW handles dedup (won't show if notification already visible)
   sendPushToAll({
     title: appName,
     body,
     tag: 'ag2r-attention',
   });
-  track('push_notification_sent', {});
 }
 
 // ─────────────────────────────────────────────

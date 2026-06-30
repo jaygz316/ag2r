@@ -17,10 +17,12 @@ self.addEventListener('push', (event) => {
     requireInteraction: true,
   };
 
-  // Dedup: don't show if a notification with the same tag is already visible
   event.waitUntil(
-    self.registration.getNotifications({ tag }).then((existing) => {
-      if (existing.length > 0) return; // already showing
+    clients.matchAll({ type: 'window', includeUncontrolled: true }).then((windowClients) => {
+      // Suppress if the PWA is in the foreground (any window is focused)
+      if (windowClients.some(c => c.focused)) return;
+
+      // Replace any existing notification with the latest body
       return self.registration.showNotification(title, options);
     })
   );
