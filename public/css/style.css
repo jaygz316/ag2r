@@ -301,8 +301,7 @@ body {
    To re-enable: comment out or remove the rules below.
    See ONBOARDING.md gotcha: "Sidebar hidden elements" */
 
-/* Task 1: Hide top 2 action buttons (New Conversation, History) — Scheduled Tasks is visible */
-[data-ag-click-label="New Conversation"],
+/* Task 1: Hide History button — New Conversation and Scheduled Tasks stay visible */
 [data-ag-click-label="Conversation History"] {
   display: none !important;
 }

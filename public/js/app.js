@@ -2002,9 +2002,9 @@ function renderSidebar(container, html) {
     const topBar = container.querySelector('[style*="app-region: drag"]');
     if (topBar) topBar.remove();
 
-    // Remove New Conversation and History buttons (not useful on mobile).
-    // Scheduled Tasks stays visible — it's the only action kept from the top 3.
-    container.querySelectorAll('[data-ag-click-label="New Conversation"], [data-ag-click-label="Conversation History"]').forEach(el => el.remove());
+    // Remove Conversation History button (redundant — sidebar already shows conversations).
+    // New Conversation and Scheduled Tasks stay visible.
+    container.querySelectorAll('[data-ag-click-label="Conversation History"]').forEach(el => el.remove());
 
     // The separator line between actions and project list
     // It's a div with mt-3 mx-2 h-px (transparent background divider)
