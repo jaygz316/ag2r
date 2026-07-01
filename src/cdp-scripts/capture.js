@@ -213,7 +213,7 @@ export const CAPTURE_SCRIPT = `
               let nameEl = ping;
               for (let k = 0; k < 10 && nameEl; k++) {
                 if (nameEl.getAttribute('role') === 'button') {
-                  name = (nameEl.textContent || '').trim().split('\n')[0].trim();
+                  name = (nameEl.textContent || '').trim();
                   break;
                 }
                 nameEl = nameEl.parentElement;
