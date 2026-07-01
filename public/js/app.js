@@ -422,6 +422,14 @@ async function loadSnapshot() {
       if (fingerprint !== _lastContentFingerprint) {
         _lastContentFingerprint = fingerprint;
         userScrolledAway = false;
+        // Conversation changed — close the right sidebar to prevent stale
+        // isSidebarOpen state from briefly opening the artifacts panel.
+        // The next snapshot will re-open it if AG's sidebar is truly open.
+        if (rightSidebar.classList.contains('open')) {
+          rightSidebar.classList.remove('open');
+          rightSidebar.inert = true;
+          rightSidebarOverlay.classList.remove('visible');
+        }
       }
 
       chatContent.innerHTML = data.html;

@@ -2162,7 +2162,7 @@ body {
 
 .comment-fab {
   position: fixed;
-  z-index: 1500;
+  z-index: 2200;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2186,7 +2186,7 @@ body {
 .comment-modal {
   position: fixed;
   inset: 0;
-  z-index: 2000;
+  z-index: 2300;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2284,7 +2284,7 @@ body {
   bottom: 80px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 1000;
+  z-index: 2200;
   background: #6366f1;
   color: #fff;
   font-size: 12px;
