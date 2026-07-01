@@ -1302,71 +1302,31 @@ body {
   color: var(--green);
 }
 
-/* ── New Session Page ── */
-.ag2r-new-session {
+/* ── New Session Page — captured content zone ── */
+/* AG's new session DOM rendered directly via bridge approach */
+.ag2r-ns-captured {
+  padding: 16px;
+}
+
+/* Hide AG's non-functional contenteditable input (it's a DOM clone) */
+.ag2r-ns-captured [data-ag-inert] {
+  display: none !important;
+}
+
+/* Ensure captured buttons are tappable on mobile */
+.ag2r-ns-captured button,
+.ag2r-ns-captured [role="button"] {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ── New Session — AG2R input (injected into AG's captured card) ── */
+.ag2r-ns-input-wrapper {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  min-height: 60vh;
-  padding: 24px 16px;
-  gap: 20px;
 }
 
-.ag2r-new-session-header {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-
-.ag2r-new-session-project {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 14px;
-  border-radius: 20px;
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.ag2r-new-session-project svg {
-  opacity: 0.7;
-}
-
-
-.ag2r-new-session-form {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  max-width: 500px;
-  position: relative;
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  background: color-mix(in srgb, #ffffff 5%, #101010);
-  overflow: hidden;
-}
-
-/* When env bar present, form becomes the outer card */
-.ag2r-new-session-form.has-env-bar {
-  background: #252525;
-  border: none;
-  padding: 1px;
-  overflow: visible;
-}
-
-/* Inner card wrapping textarea + controls */
-.ag2r-new-session-inner {
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-input);
-  border-radius: calc(16px - 1px);
-  overflow: hidden;
-}
-
-.ag2r-new-session-form textarea {
+.ag2r-ns-input-wrapper textarea {
   width: 100%;
   min-height: 80px;
   max-height: 200px;
@@ -1379,35 +1339,28 @@ body {
   resize: vertical;
   outline: none;
   line-height: 1.5;
+  box-sizing: border-box;
 }
 
-.ag2r-new-session-form textarea:focus {
-  outline: none;
-}
-
-.ag2r-new-session-form textarea::placeholder {
+.ag2r-ns-input-wrapper textarea::placeholder {
   color: var(--text-muted);
 }
 
-.ag2r-new-session-controls {
+/* Fallback controls row (used if AG's toolbar row can't be found) */
+.ag2r-ns-controls {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 6px 10px;
 }
 
-.ag2r-new-session-left,
-.ag2r-new-session-right {
+.ag2r-ns-controls-right {
   display: flex;
   align-items: center;
   gap: 4px;
 }
 
-.ag2r-new-session-left {
-  position: relative;
-}
-
-.ag2r-new-session-form button[type="submit"] {
+#ag2r-new-session-send {
   width: 36px;
   height: 36px;
   border-radius: 50%;
@@ -1421,56 +1374,22 @@ body {
   transition: opacity 0.15s, transform 0.15s;
 }
 
-.ag2r-new-session-form button[type="submit"]:active {
+#ag2r-new-session-send:active {
   transform: scale(0.92);
 }
 
-.ag2r-new-session-form button[type="submit"]:disabled {
+#ag2r-new-session-send:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.ag2r-new-session-form button[type="submit"].sending {
+#ag2r-new-session-send.sending {
   animation: pulse 1s infinite;
 }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
-}
-
-/* ── New Session — Environment/Branch Settings Bar ── */
-.ag2r-new-session-env-bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 6px 12px;
-}
-
-.ag2r-env-chip {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  border-radius: 8px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-family: var(--font-sans);
-  cursor: pointer;
-  transition: color 0.15s, background 0.15s;
-  white-space: nowrap;
-}
-
-.ag2r-env-chip:active {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.ag2r-env-chip .material-symbols-rounded {
-  opacity: 0.8;
 }
 
 /* ── Dropdown Overlay (AG portal menus) ── */

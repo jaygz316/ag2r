@@ -8,7 +8,7 @@ export const TAG_INTERACTIVES_FN = `
     let idx = 0;
     const tagged = [];
     // Semantic interactive elements — always tag, no text-length filter
-    root.querySelectorAll('button, a, [role="button"]').forEach(el => {
+    root.querySelectorAll('button, a, [role="button"], [role="option"], [role="menuitem"], [role="menuitemradio"]').forEach(el => {
       if (skipVisibilityCheck || el.offsetParent !== null) {
         const text = (el.textContent || '').trim();
         el.setAttribute('data-ag-click-id', prefix + ':' + idx);

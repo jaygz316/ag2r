@@ -251,37 +251,48 @@ export const CAPTURE_SCRIPT = `
   let dialogHtml = null;
   try {
     for (const child of document.body.children) {
-      if (child.id || child.tagName === 'SCRIPT' || child.tagName === 'STYLE') continue;
+      if (child.tagName === 'SCRIPT' || child.tagName === 'STYLE') continue;
       const text = child.textContent.trim();
       if (!text) continue;
 
-      // Dropdown menu (role="listbox")
-      if (!dropdownHtml && child.getAttribute('role') === 'listbox') {
-        const tagged = tagInteractives(child, 'dropdown', true, false);
-        const clone = child.cloneNode(true);
-        untagAll(tagged);
-        dropdownHtml = clone.outerHTML;
-      }
+      // The target element for portal detection: either the child itself,
+      // or a nested portal inside an ID-wrapped Radix container (div#radix-:rXX:).
+      // Radix wraps portals in ID'd divs — we need to look inside them.
+      const targets = child.id
+        ? Array.from(child.querySelectorAll('[role="dialog"], [role="listbox"]'))
+        : [child];
 
-      // Dialog/modal (fixed overlay with buttons)
-      const cls = child.className || '';
-      if (!dialogHtml && cls.includes('fixed') && cls.includes('inset-0')) {
-        const tagged = tagInteractives(child, 'dialog', true, false);
-        const clone = child.cloneNode(true);
-        untagAll(tagged);
-        clone.querySelectorAll('style').forEach(s => s.remove());
-        dialogHtml = clone.outerHTML;
-      }
+      for (const target of targets) {
+        // Dropdown menu (role="listbox")
+        if (!dropdownHtml && target.getAttribute('role') === 'listbox') {
+          const tagged = tagInteractives(target, 'dropdown', true, false);
+          const clone = target.cloneNode(true);
+          untagAll(tagged);
+          dropdownHtml = clone.outerHTML;
+        }
 
-      // Popover dialog (role="dialog" portal, e.g. environment selector, context menus)
-      if (!dialogHtml && child.getAttribute('role') === 'dialog') {
-        const tagged = tagInteractives(child, 'dialog', true, false);
-        const clone = child.cloneNode(true);
-        untagAll(tagged);
-        clone.querySelectorAll('style').forEach(s => s.remove());
-        dialogHtml = clone.outerHTML;
+        // Dialog/modal (fixed overlay with buttons)
+        const cls = (target.className || '').toString();
+        if (!dialogHtml && cls.includes('fixed') && cls.includes('inset-0')) {
+          const tagged = tagInteractives(target, 'dialog', true, false);
+          const clone = target.cloneNode(true);
+          untagAll(tagged);
+          clone.querySelectorAll('style').forEach(s => s.remove());
+          dialogHtml = clone.outerHTML;
+        }
+
+        // Popover dialog (role="dialog" portal, e.g. environment selector, context menus)
+        if (!dialogHtml && target.getAttribute('role') === 'dialog') {
+          const tagged = tagInteractives(target, 'dialog', true, false);
+          const clone = target.cloneNode(true);
+          untagAll(tagged);
+          clone.querySelectorAll('style').forEach(s => s.remove());
+          dialogHtml = clone.outerHTML;
+        }
       }
     }
+
+
   } catch (e) {
     console.debug('[AG2R] Portal capture error:', e.message);
   }

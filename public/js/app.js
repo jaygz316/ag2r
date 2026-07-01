@@ -379,58 +379,40 @@ async function loadSnapshot() {
     }
 
 
-    // Don't re-render the chat area if already on the new session page — our custom
-    // form is already rendered and re-rendering would destroy the textarea (keyboard pop-up).
+    // Don't re-render when the new session page textarea is active — our textarea
+    // is injected INSIDE the captured zone, so replacing it would destroy the input.
+    // The captured buttons (project/model/env) may become stale if the user changes
+    // settings, but they transition to a fresh capture when the user sends a message.
     const newSessionInput = document.getElementById('ag2r-new-session-input');
     const skipChatRender = data.isNewSessionPage && newSessionInput;
 
     if (skipChatRender) {
-      // Update project name + model from fresh snapshot (user may have clicked + on a different project)
-      const tmpDiv = document.createElement('div');
-      tmpDiv.innerHTML = data.html;
-      const projectBtn = tmpDiv.querySelector('[aria-haspopup="dialog"] .truncate');
-      const freshProject = projectBtn ? projectBtn.textContent.trim() : '';
-      const projectEl = chatContent.querySelector('.ag2r-new-session-project span:not(.material-symbols-rounded)');
-      if (projectEl && freshProject) projectEl.textContent = freshProject;
+      // Skip full re-render — textarea is inside the captured zone.
+      // But update the captured zone from new snapshot so project/model/env
+      // labels reflect changes and new elements (like branch picker) appear.
+      const capturedZone = chatContent.querySelector('.ag2r-ns-captured');
+      if (capturedZone) {
+        // Save textarea state before re-render
+        const input = capturedZone.querySelector('#ag2r-new-session-input');
+        const savedValue = input ? input.value : '';
+        const hadFocus = input && document.activeElement === input;
 
-      // Update model from server-side extracted name (bottom-row chip only)
-      const freshModel = data.modelName || '';
-      const nsModelChipText = chatContent.querySelector('.ag2r-ns-model-chip .model-chip-text');
-      if (nsModelChipText && freshModel) nsModelChipText.textContent = freshModel;
+        // Re-render the captured zone with fresh HTML
+        capturedZone.innerHTML = data.html;
+        processNewSessionCapture(capturedZone);
+        addClickProxyHandlers(capturedZone);
 
-      // Still update env chips with fresh data (user may have changed worktree/branch)
-      const envBar = chatContent.querySelector('.ag2r-new-session-env-bar');
-      if (envBar && (data.environmentName || data.branchName)) {
-        const environmentName = data.environmentName || '';
-        const branchName = data.branchName || '';
-        const envIcon = environmentName === 'Local'
-          ? '<span class="material-symbols-rounded" style="font-size:14px">desktop_windows</span>'
-          : '<span class="material-symbols-rounded" style="font-size:14px">account_tree</span>';
-        let newEnvHtml = '';
-        if (environmentName) {
-          newEnvHtml = `
-            <button type="button" class="ag2r-env-chip" data-ag-click-id="env:0" data-ag-click-label="${environmentName}">
-              ${envIcon}
-              <span>${environmentName}</span>
-              <span class="material-symbols-rounded" style="font-size:12px">expand_more</span>
-            </button>
-            ${branchName ? `
-            <button type="button" class="ag2r-env-chip" data-ag-click-id="env:1" data-ag-click-label="${branchName}">
-              <span class="material-symbols-rounded" style="font-size:14px">fork_right</span>
-              <span>${branchName}</span>
-              <span class="material-symbols-rounded" style="font-size:12px">expand_more</span>
-            </button>` : ''}
-          `;
-        }
-        envBar.innerHTML = newEnvHtml;
-        addClickProxyHandlers(envBar);
+        // Restore textarea state
+        const newInput = capturedZone.querySelector('#ag2r-new-session-input');
+        if (newInput && savedValue) newInput.value = savedValue;
+        if (newInput && hadFocus) newInput.focus();
       }
     } else {
       // Render HTML
       chatContent.innerHTML = data.html;
       hideEmptyState();
 
-      // If this is the new session page, replace captured content with a functional input
+      // If this is the new session page, process captured HTML and overlay AG2R's input form
       if (data.isNewSessionPage) {
         renderNewSessionPage(chatContent, data);
         // Close sidebar when transitioning to new session page (+ button)
@@ -600,7 +582,9 @@ async function loadSnapshot() {
               popoverHtml += `<button class="${isDestructive ? 'destructive' : ''}" data-ag-click-id="${id}" data-ag-click-label="${label}">${text}</button>`;
             });
           }
-          dropdownContent.innerHTML = popoverHtml || buttonsHtml;
+          // Use whichever extraction produced more content — the walker may miss items
+          // when the dialog has nested containers (e.g., project picker wraps items).
+          dropdownContent.innerHTML = (popoverHtml.length >= buttonsHtml.length) ? popoverHtml : (buttonsHtml || popoverHtml);
         } else {
           // Modal dialog (undo confirmation, delete, etc.)
           // Render AG's native HTML directly with AG's CSS applied.
@@ -1718,98 +1702,31 @@ rightSidebarOverlay.addEventListener('click', closeRightSidebar);
 // New Session Page — functional input overlay
 // ─────────────────────────────────────────────
 function renderNewSessionPage(container, data) {
-  const capturedHtml = data.html;
-  // Extract project name from the captured HTML (look for the project dropdown button label)
-  let projectName = '';
-  const tmpDiv = document.createElement('div');
-  tmpDiv.innerHTML = capturedHtml;
-  const projectBtn = tmpDiv.querySelector('[aria-haspopup="dialog"] .truncate');
-  if (projectBtn) projectName = projectBtn.textContent.trim();
+  // ── Bridge approach: render AG's captured HTML + inject AG2R's input into it ──
+  // The captured HTML already has interactive elements tagged with chat:N
+  // (project dropdown, model selector, env/branch buttons). We render it
+  // directly and replace AG's contenteditable with our own functional textarea.
 
-  // Extract model name from server-extracted data
-  const modelName = data.modelName || '';
+  // Wrap captured HTML in a zone div so we can update it independently
+  // on subsequent polls (preserves textarea state).
+  const capturedHtml = container.innerHTML;
+  container.innerHTML = '';
 
-  // Environment and branch from snapshot data
-  const environmentName = data.environmentName || '';
-  const branchName = data.branchName || '';
-  const isWorktreeMode = environmentName && environmentName !== 'Local';
+  const capturedZone = document.createElement('div');
+  capturedZone.className = 'ag2r-ns-captured';
+  capturedZone.innerHTML = capturedHtml;
+  container.appendChild(capturedZone);
 
-  // Build environment/branch settings bar
-  let envBarHtml = '';
-  if (environmentName) {
-    // Environment/worktree icon: monitor for Local, fork-tree for worktree
-    const envIcon = environmentName === 'Local'
-      ? '<span class="material-symbols-rounded" style="font-size:14px">desktop_windows</span>'
-      : '<span class="material-symbols-rounded" style="font-size:14px">account_tree</span>';
-    envBarHtml = `
-      <div class="ag2r-new-session-env-bar">
-        <button type="button" class="ag2r-env-chip" data-ag-click-id="env:0" data-ag-click-label="${environmentName}">
-          ${envIcon}
-          <span>${environmentName}</span>
-          <span class="material-symbols-rounded" style="font-size:12px">expand_more</span>
-        </button>
-        ${branchName ? `
-        <button type="button" class="ag2r-env-chip" data-ag-click-id="env:1" data-ag-click-label="${branchName}">
-          <span class="material-symbols-rounded" style="font-size:14px">fork_right</span>
-          <span>${branchName}</span>
-          <span class="material-symbols-rounded" style="font-size:12px">expand_more</span>
-        </button>
-        ` : ''}
-      </div>
-    `;
-  }
+  // Process captured content: replace AG's contenteditable with our textarea+controls
+  processNewSessionCapture(capturedZone);
 
-  // Build our own functional UI
-  container.innerHTML = `
-    <div class="ag2r-new-session">
-      <div class="ag2r-new-session-header">
-        ${projectName ? `<button type="button" class="ag2r-new-session-project" data-ag-click-id="project:0" data-ag-click-label="${projectName}">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 -960 960 960" fill="currentColor">
-            <path d="M172.31-180Q142-180 121-201t-21-51.31V-707.69Q100-738 121-759t51.31-21H391.92l80,80H787.69Q818-700 839-679t21,51.31v375.38Q860-222 839-201t-51.31,21H172.31Z"/>
-          </svg>
-          <span>${projectName}</span>
-          <span class="material-symbols-rounded" style="font-size:14px;opacity:0.6">expand_more</span>
-        </button>` : ''}
-      </div>
-      <form id="ag2r-new-session-form" class="ag2r-new-session-form ${envBarHtml ? 'has-env-bar' : ''}">
-        <div class="ag2r-new-session-inner">
-          <div id="ag2r-ns-image-preview" class="image-preview-strip hidden"></div>
-          <textarea
-            id="ag2r-new-session-input"
-            placeholder="Ask anything..."
-            rows="3"
-          ></textarea>
-          <div class="ag2r-new-session-controls">
-            <div class="ag2r-new-session-left">
-              <input type="file" id="ag2r-ns-photo-input" accept="image/*" multiple hidden>
-              <button type="button" id="ag2r-ns-attach" class="attach-btn" aria-label="Add context">
-                <span class="material-symbols-rounded">add</span>
-              </button>
-              <button type="button" class="ag2r-ns-model-chip model-chip" data-ag-click-id="model:0" data-ag-click-label="${modelName}">
-                <span class="model-chip-text">${modelName}</span>
-                <span class="material-symbols-rounded model-chip-chevron">expand_more</span>
-              </button>
-            </div>
-            <div class="ag2r-new-session-right">
-              <button type="button" id="ag2r-new-session-mic" class="mic-btn" aria-label="Voice input">
-                <span class="material-symbols-rounded mic-icon">mic</span>
-              </button>
-              <button type="submit" id="ag2r-new-session-send" aria-label="Send">
-                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 -960 960 960" fill="currentColor">
-                  <path d="M120-160v-640l760,320-760,320Zm60-93 544-227-544-230v168l242,62-242,60v167Zm0,0v-457,457Z"/>
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
-        ${envBarHtml}
-      </form>
-    </div>
-  `;
+  // Add click proxy handlers for the captured buttons (project, model, env, etc.)
+  addClickProxyHandlers(capturedZone);
 
-  const form = container.querySelector('#ag2r-new-session-form');
+  // ── Wire form handlers ──
   const input = container.querySelector('#ag2r-new-session-input');
   const sendBtn = container.querySelector('#ag2r-new-session-send');
+  if (!input || !sendBtn) return; // processNewSessionCapture couldn't find the editor
 
   // Prevent snapshot refresh from wiping the input while user is typing
   let userIsTyping = false;
@@ -1821,32 +1738,33 @@ function renderNewSessionPage(container, data) {
   const nsPhotoInput = container.querySelector('#ag2r-ns-photo-input');
   const nsPreviewStrip = container.querySelector('#ag2r-ns-image-preview');
 
-  const nsAttachMenu = createAttachMenu(
-    container.querySelector('.ag2r-new-session-left'),
-    nsPhotoInput
-  );
+  if (nsAttachBtn && nsPhotoInput) {
+    const nsAttachMenu = createAttachMenu(
+      nsAttachBtn.parentElement,
+      nsPhotoInput
+    );
 
-  nsAttachBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    nsAttachMenu.classList.toggle('hidden');
-  });
+    nsAttachBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      nsAttachMenu.classList.toggle('hidden');
+    });
 
-  nsPhotoInput.addEventListener('change', () => {
-    const files = Array.from(nsPhotoInput.files);
-    if (!files.length) return;
-    const remaining = MAX_STAGED_IMAGES - stagedImages.length;
-    for (const file of files.slice(0, remaining)) {
-      stagedImages.push({ file, objectUrl: URL.createObjectURL(file) });
-    }
-    // Render into the new session preview strip
-    renderImagePreviewsInto(nsPreviewStrip, nsAttachBtn);
-    nsPhotoInput.value = '';
-  });
+    nsPhotoInput.addEventListener('change', () => {
+      const files = Array.from(nsPhotoInput.files);
+      if (!files.length) return;
+      const remaining = MAX_STAGED_IMAGES - stagedImages.length;
+      for (const file of files.slice(0, remaining)) {
+        stagedImages.push({ file, objectUrl: URL.createObjectURL(file) });
+      }
+      renderImagePreviewsInto(nsPreviewStrip, nsAttachBtn);
+      nsPhotoInput.value = '';
+    });
+  }
 
-  // Handle form submission
+  // Handle send (no <form> element — we handle it directly)
   let nsIsSending = false;
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
+
+  async function handleSend() {
     const text = input.value.trim();
     const hasImages = stagedImages.length > 0;
     if ((!text && !hasImages) || nsIsSending) return;
@@ -1872,7 +1790,9 @@ function renderNewSessionPage(container, data) {
         return;
       }
       clearStagedImages();
-      renderImagePreviewsInto(nsPreviewStrip, nsAttachBtn);
+      if (nsPreviewStrip && nsAttachBtn) {
+        renderImagePreviewsInto(nsPreviewStrip, nsAttachBtn);
+      }
       await new Promise(r => setTimeout(r, 300));
     }
 
@@ -1898,13 +1818,15 @@ function renderNewSessionPage(container, data) {
     input.disabled = false;
     sendBtn.disabled = false;
     sendBtn.classList.remove('sending');
-  });
+  }
+
+  sendBtn.addEventListener('click', handleSend);
 
   // Desktop: Enter to submit. Mobile: Enter inserts newline.
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
       e.preventDefault();
-      form.requestSubmit();
+      handleSend();
     }
   });
 
@@ -1916,6 +1838,58 @@ function renderNewSessionPage(container, data) {
   }
 
   // Don't auto-focus — let the user tap the input to bring up keyboard
+}
+
+// ── Helper: process captured new session HTML for mobile display ──
+// Replaces AG's non-functional contenteditable with our textarea + controls.
+function processNewSessionCapture(zone) {
+  // Find AG's contenteditable editor
+  const editor = zone.querySelector('[contenteditable]')
+    || zone.querySelector('[data-lexical-editor]')
+    || zone.querySelector('[role="textbox"]');
+
+  if (editor) {
+    // Build our textarea + controls to replace the editor
+    const wrapper = document.createElement('div');
+    wrapper.className = 'ag2r-ns-input-wrapper';
+    wrapper.innerHTML = `
+      <div id="ag2r-ns-image-preview" class="image-preview-strip hidden"></div>
+      <textarea
+        id="ag2r-new-session-input"
+        placeholder="Ask anything..."
+        rows="3"
+      ></textarea>
+      <div class="ag2r-ns-controls">
+        <input type="file" id="ag2r-ns-photo-input" accept="image/*" multiple hidden>
+        <button type="button" id="ag2r-ns-attach" class="attach-btn" aria-label="Add context">
+          <span class="material-symbols-rounded">add</span>
+        </button>
+        <div class="ag2r-ns-controls-right">
+          <button type="button" id="ag2r-new-session-mic" class="mic-btn" aria-label="Voice input">
+            <span class="material-symbols-rounded mic-icon">mic</span>
+          </button>
+          <button type="button" id="ag2r-new-session-send" aria-label="Send">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 -960 960 960" fill="currentColor">
+              <path d="M120-160v-640l760,320-760,320Zm60-93 544-227-544-230v168l242,62-242,60v167Zm0,0v-457,457Z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    `;
+
+    // Replace the editor with our wrapper
+    editor.replaceWith(wrapper);
+  }
+
+  // Hide AG's send button (we have our own)
+  zone.querySelectorAll('[data-tooltip-id*="send-button"]').forEach(el => {
+    el.style.display = 'none';
+  });
+
+  // Also hide AG's "+" button for attachments if present (we have our own)
+  zone.querySelectorAll('[aria-label="Add context"], [aria-label="Add Content"]').forEach(el => {
+    el.style.display = 'none';
+  });
 }
 
 // ─────────────────────────────────────────────

@@ -684,7 +684,10 @@ function fireBurstCaptures(delays) {
             (snapshot.runningTasksHtml || '') +
             (snapshot.scheduledTasksHtml || '') +
             (snapshot.scheduledTasksDialogHtml || '') +
-            (snapshot.subagentInfoHtml || '')
+            (snapshot.subagentInfoHtml || '') +
+            (snapshot.modelName || '') +
+            (snapshot.environmentName || '') +
+            (snapshot.branchName || '')
           );
           if (hash !== lastSnapshotHash) {
             cachedSnapshot = snapshot;
@@ -731,7 +734,10 @@ function startPolling() {
           (snapshot.runningTasksHtml || '') +
           (snapshot.scheduledTasksHtml || '') +
           (snapshot.scheduledTasksDialogHtml || '') +
-          (snapshot.subagentInfoHtml || '')
+          (snapshot.subagentInfoHtml || '') +
+          (snapshot.modelName || '') +
+          (snapshot.environmentName || '') +
+          (snapshot.branchName || '')
         );
 
         // Only broadcast and update cache when content actually changes
@@ -1282,7 +1288,7 @@ app.post('/click', async (req, res) => {
     // dialog/dropdown DOM appearing (React render takes 50-200ms)
     if (result?.ok) {
       const source = result.source || '';
-      if (['env', 'model', 'project', 'dropdown', 'dialog', 'left'].includes(source)) {
+      if (['chat', 'dropdown', 'dialog', 'left'].includes(source)) {
         // Fire 3 rapid captures at 150ms, 400ms, 700ms
         fireBurstCaptures([150, 400, 700]);
       }

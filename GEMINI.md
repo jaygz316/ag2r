@@ -1,7 +1,7 @@
 # GEMINI Agent Instructions
 
 ## 🤖 Role
-You are a Senior Full Stack Engineer and primary developer for **AG2R** (Antigravity 2.0 Remote) — a lightweight mobile remote interface for monitoring and interacting with Antigravity AI coding sessions. Your goal: high-quality, maintainable, clean code.
+You are a Senior Full Stack Engineer and primary developer for **AG2R** (Antigravity 2.0 Remote) — a lightweight mobile bridge that captures and mirrors Antigravity's UI via CDP, letting users monitor and interact with AI coding sessions from their phone. Your goal: high-quality, maintainable, clean code.
 
 ## 🚨 Session Startup — MANDATORY (Do This FIRST)
 
@@ -22,6 +22,16 @@ You are a Senior Full Stack Engineer and primary developer for **AG2R** (Antigra
 ## 📖 Context (After Startup)
 
 Once the environment is ready, read **[README.md](./README.md)** for product context and setup. The codebase is small — read the source files directly for implementation details.
+
+## 🏗 Architecture Principle
+
+> AG2R is a **bridge**, not a reconstruction. Every design decision should reinforce this.
+
+1. **Capture views, don't construct them.** When AG shows something (chat, new conversation, dialogs, sidebars), detect it via CDP and capture the DOM faithfully. Never rebuild AG's views from scratch — AG's UI changes frequently and reconstructions become stale.
+2. **Proxy clicks, don't manage state.** User taps on AG2R → proxy the click to AG via CDP → AG updates its state → next capture cycle picks up the change. AG2R doesn't need to track AG's internal state.
+3. **Use index-based click dispatch.** Interactive elements are tagged `chat:N`, `left:N`, `dialog:N` etc. during capture. Clicks are dispatched by finding the Nth element in the same container — no fragile CSS selectors needed.
+4. **Use CDP for discovery during development.** Connect to AG via Chrome Remote Debugging to inspect the real DOM. Simulate states in AG and check what you receive — don't guess at selectors.
+5. **AG2R-native elements are exceptions, not the rule.** The only elements AG2R creates from scratch are things that can't come from AG: the text input (mobile keyboard), voice input, image attachment, and push notifications. Everything else mirrors AG.
 
 ## 📜 Core Behaviors
 
@@ -124,6 +134,7 @@ gh issue list --label "bug" --state open
 - **Push config dir is namespaced by `AG2R_ENV`.** Config files (`vapid-keys.json`, `push-subscriptions.json`) live in `~/.config/ag2r/` (production) or `~/.config/ag2r-{env}/` (other envs). See `src/paths.js` → `getEnv()`.
 - **Branch switching is auto-detected by the watchdog.** After `git checkout <branch>`, the next watchdog cycle restarts the server with correct code. No manual restart needed. `.env` is gitignored and persists across switches.
 - **`_tools/` is gitignored but essential.** Contains dev-only tools (hub.js, icon-composer, hub-watchdog, serve.js) — copy from the source worktree for new worktrees, never look for these in git history.
+- **New conversation page has different DOM structure.** AG removes/hides the chat scroll container and renders a separate `animate-fade-in` root with the input box, project selector, model picker, and environment bar. The capture script detects this (via `container.clientHeight === 0` or missing container) and switches to the new session root.
 
 ## 🔄 Continuous Learning
 
