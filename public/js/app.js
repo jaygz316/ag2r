@@ -271,6 +271,8 @@ function connectWebSocket() {
     debugLog('ws-open');
     wsReconnectDelay = 1000;
     updateConnectionStatus('connected');
+    // Tell server whether app is in foreground
+    sendVisibility();
   };
 
   ws.onmessage = (event) => {
@@ -342,6 +344,14 @@ function connectWebSocket() {
     // onclose will fire after this
   };
 }
+
+// Tell server whether the app is in the foreground (controls push suppression)
+function sendVisibility() {
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'visibility', visible: document.visibilityState === 'visible' }));
+  }
+}
+document.addEventListener('visibilitychange', sendVisibility);
 
 // ─────────────────────────────────────────────
 // Snapshot Loading & Rendering

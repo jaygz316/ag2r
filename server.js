@@ -93,6 +93,7 @@ let lastSnapshotHash = null;
 let pollTimer = null;
 let reconnectTimer = null;
 const wsClients = new Set();
+let visibleClients = 0; // Clients with document.visibilityState === 'visible'
 
 // === Push Notifications ===
 const VAPID_KEYS_PATH = getConfigPath('vapid-keys.json');
@@ -187,10 +188,10 @@ async function sendPushToAll(payload) {
 }
 
 // Check if any conversation needs attention and send a push notification.
-// Only sends when: attention exists AND app is not open (no active WS clients).
+// Skips when app is in foreground (visibleClients > 0).
 // SW-side dedup (getNotifications) prevents spamming unread notifications.
 function checkAttentionState(snapshot) {
-  if (wsClients.size > 0) return; // App is open — no push needed
+  if (visibleClients > 0) return; // App is in foreground — no push needed
 
   const hasPermission = !!snapshot.permissionHtml;
   const attentionItems = (snapshot.sidebarAttentionItems || [])
@@ -1677,12 +1678,26 @@ async function start() {
       }));
     }
 
+    ws.on('message', (raw) => {
+      try {
+        const msg = JSON.parse(raw);
+        if (msg.type === 'visibility') {
+          const wasVisible = ws._visible;
+          ws._visible = !!msg.visible;
+          if (ws._visible && !wasVisible) visibleClients++;
+          if (!ws._visible && wasVisible) visibleClients--;
+        }
+      } catch {}
+    });
+
     ws.on('close', () => {
+      if (ws._visible) visibleClients--;
       wsClients.delete(ws);
       log('WS', `Client disconnected (${wsClients.size} total)`);
     });
 
     ws.on('error', () => {
+      if (ws._visible) visibleClients--;
       wsClients.delete(ws);
     });
   });
