@@ -372,6 +372,11 @@ async function loadSnapshot() {
     // agentRunning is set exclusively by WS handlers (snapshot/status messages).
     // Do NOT set it here — the HTTP response can be stale vs the WS push.
 
+    // Pre-render anchor: snapshot whether we're at the bottom BEFORE injecting
+    // new content. Large content chunks can push scroll position away from bottom,
+    // so checking after render would give a false "user scrolled away" signal.
+    const wasAtBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < 50;
+
     // Inject CSS (Antigravity's stylesheets) into all panels
     if (data.css) {
       cdpStyles.textContent = data.css;
@@ -418,6 +423,7 @@ async function loadSnapshot() {
         _lastContentFingerprint = fingerprint;
         userScrolledAway = false;
       }
+
       chatContent.innerHTML = data.html;
       hideEmptyState();
 
@@ -875,20 +881,13 @@ async function loadSnapshot() {
     }
     if (data.environmentName) _prevEnvironmentName = data.environmentName;
 
-    // Sync scroll position from AG's DOM state.
-    // AG handles scroll-to-bottom on send and auto-scroll during streaming.
-    // We mirror: if AG is near bottom AND the user hasn't scrolled away, scroll to bottom.
-    // If the user has deliberately scrolled up, we leave them there until they
-    // scroll back to the bottom, tap the FAB, or send a message.
+    // Scroll-to-bottom uses a pre-render anchor: wasAtBottom was captured BEFORE
+    // content injection (see above). If the user was at the bottom before the
+    // render, keep them there — regardless of how far new content pushed them.
+    // If they deliberately scrolled away (userScrolledAway), leave them alone.
     requestAnimationFrame(() => {
-      if (!userScrolledAway) {
-        // If AG reports it's near bottom, or we have no scroll info (first load),
-        // scroll AG2R to bottom too.
-        const agAtBottom = !data.scrollInfo ||
-          (data.scrollInfo.scrollHeight - data.scrollInfo.scrollTop - data.scrollInfo.clientHeight < 50);
-        if (agAtBottom) {
-          chatArea.scrollTop = chatArea.scrollHeight;
-        }
+      if (!userScrolledAway && wasAtBottom) {
+        chatArea.scrollTop = chatArea.scrollHeight;
       }
       // Clear isRendering AFTER scroll is set — the scroll listener skips
       // events while isRendering is true, preventing our programmatic scroll
@@ -932,12 +931,10 @@ chatArea.addEventListener('scroll', () => {
   updateScrollFab();
   // Only track user scroll intent when NOT rendering (programmatic scroll shouldn't lock user out)
   if (isRendering) return;
-  // Dynamic threshold: during agent streaming, content grows in large chunks
-  // which can momentarily push the scroll position away from bottom. Use a
-  // larger tolerance (300px) so auto-scroll stays sticky. When idle, 50px
-  // is enough to let the user escape with a small deliberate scroll.
-  const threshold = agentRunning ? 300 : 50;
-  const nearBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < threshold;
+  // Flat 50px threshold: the pre-render anchor in loadSnapshot() handles
+  // stickiness during streaming. This listener only needs to detect when the
+  // user deliberately scrolls away (small escape distance = responsive UX).
+  const nearBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < 50;
   userScrolledAway = !nearBottom;
 }, { passive: true });
 
