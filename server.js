@@ -187,8 +187,11 @@ async function sendPushToAll(payload) {
 }
 
 // Check if any conversation needs attention and send a push notification.
-// NO FILTERS — verify notifications work first, add cooldown later
+// Only sends when: attention exists AND app is not open (no active WS clients).
+// SW-side dedup (getNotifications) prevents spamming unread notifications.
 function checkAttentionState(snapshot) {
+  if (wsClients.size > 0) return; // App is open — no push needed
+
   const hasPermission = !!snapshot.permissionHtml;
   const attentionItems = (snapshot.sidebarAttentionItems || [])
     .filter(item => item.type !== 'completed');
