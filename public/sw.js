@@ -17,7 +17,6 @@ self.addEventListener('push', (event) => {
     icon: data.icon || '/ag2r-icon.png',
     badge: '/ag2r-badge.png',
     tag,
-    renotify: true,
     data: { url: data.url },
     requireInteraction: true,
   };
