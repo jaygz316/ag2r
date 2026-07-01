@@ -208,7 +208,17 @@ export const CAPTURE_SCRIPT = `
                 else if (svgClass.includes('lucide-message')) type = 'question';
                 else type = 'permission'; // fallback for any other SVG icon
               }
-              sidebarAttentionItems.push({ id, type });
+              // Extract conversation name from the sidebar item text
+              let name = '';
+              let nameEl = ping;
+              for (let k = 0; k < 10 && nameEl; k++) {
+                if (nameEl.getAttribute('role') === 'button') {
+                  name = (nameEl.textContent || '').trim().split('\n')[0].trim();
+                  break;
+                }
+                nameEl = nameEl.parentElement;
+              }
+              sidebarAttentionItems.push({ id, type, name });
             }
             break;
           }

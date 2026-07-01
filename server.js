@@ -190,18 +190,51 @@ async function sendPushToAll(payload) {
 // Check if any conversation needs attention and send a push notification.
 // Skips when app is in foreground (visibleClients > 0).
 // SW-side dedup (getNotifications) prevents spamming unread notifications.
+// Server-side dedup: tracks notified conversation IDs to avoid re-notifying
+// until the conversation leaves the attention list (user attended to it).
+const notifiedConversations = new Set();
+
+function truncName(name) {
+  if (!name) return '';
+  return name.length > 16 ? name.slice(0, 16) + '...' : name;
+}
+
 function checkAttentionState(snapshot) {
   if (visibleClients > 0) return; // App is in foreground — no push needed
 
   const hasPermission = !!snapshot.permissionHtml;
   const attentionItems = (snapshot.sidebarAttentionItems || [])
     .filter(item => item.type !== 'completed');
+
+  // Clear notified IDs that are no longer in attention list (user attended to them)
+  for (const id of notifiedConversations) {
+    if (!attentionItems.some(item => item.id === id)) {
+      notifiedConversations.delete(id);
+    }
+  }
+
   if (!hasPermission && attentionItems.length === 0) return;
 
-  const types = new Set(attentionItems.map(item => item.type));
-  let body = 'A conversation needs your attention';
-  if (types.has('question')) body = 'An agent has a question for you';
-  else if (types.has('command') || hasPermission) body = 'A command needs your approval';
+  // Find conversations we haven't notified about yet
+  const newItems = attentionItems.filter(item => !notifiedConversations.has(item.id));
+  if (newItems.length === 0 && !hasPermission) return;
+
+  // Pick the first new item for the notification text
+  const item = newItems[0] || attentionItems[0];
+  const name = truncName(item?.name);
+  const types = new Set(newItems.map(i => i.type));
+
+  let body;
+  if (types.has('question')) {
+    body = name ? `Agent in ${name} has a question for you` : 'An agent has a question for you';
+  } else if (types.has('command') || hasPermission) {
+    body = name ? `A command in ${name} requires your approval` : 'A command requires your approval';
+  } else {
+    body = name ? `${name} needs your attention` : 'A conversation needs your attention';
+  }
+
+  // Mark all new items as notified
+  for (const i of newItems) notifiedConversations.add(i.id);
 
   log('Push', `Attention detected — sending`);
   sendPushToAll({
