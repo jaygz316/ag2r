@@ -409,7 +409,10 @@ async function loadSnapshot() {
         if (newInput && hadFocus) newInput.focus();
       }
     } else {
-      // Render HTML
+      // Render HTML — this is either a new conversation, page refresh,
+      // or transition from new-session to chat. Reset scroll state so
+      // we land at the bottom of the new content.
+      userScrolledAway = false;
       chatContent.innerHTML = data.html;
       hideEmptyState();
 
@@ -873,8 +876,11 @@ async function loadSnapshot() {
     // If the user has deliberately scrolled up, we leave them there until they
     // scroll back to the bottom, tap the FAB, or send a message.
     requestAnimationFrame(() => {
-      if (data.scrollInfo && !userScrolledAway) {
-        const agAtBottom = data.scrollInfo.scrollHeight - data.scrollInfo.scrollTop - data.scrollInfo.clientHeight < 50;
+      if (!userScrolledAway) {
+        // If AG reports it's near bottom, or we have no scroll info (first load),
+        // scroll AG2R to bottom too.
+        const agAtBottom = !data.scrollInfo ||
+          (data.scrollInfo.scrollHeight - data.scrollInfo.scrollTop - data.scrollInfo.clientHeight < 50);
         if (agAtBottom) {
           chatArea.scrollTop = chatArea.scrollHeight;
         }
@@ -926,8 +932,9 @@ chatArea.addEventListener('scroll', () => {
 }, { passive: true });
 
 scrollFab.addEventListener('click', () => {
+  debugLog('scroll', `FAB clicked. scrollHeight=${chatArea.scrollHeight} scrollTop=${chatArea.scrollTop} clientHeight=${chatArea.clientHeight}`);
   userScrolledAway = false;
-  scrollToBottom();
+  chatArea.scrollTo({ top: chatArea.scrollHeight, behavior: 'smooth' });
   requestAnimationFrame(() => updateScrollFab());
 });
 
