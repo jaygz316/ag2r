@@ -1841,52 +1841,106 @@ function renderNewSessionPage(container, data) {
 }
 
 // ── Helper: process captured new session HTML for mobile display ──
-// Replaces AG's non-functional contenteditable with our textarea + controls.
+// Orchestrates three independent steps to transform AG's captured DOM
+// into a functional mobile input. Each step is isolated so individual
+// pieces can be updated if AG changes its DOM structure.
 function processNewSessionCapture(zone) {
-  // Find AG's contenteditable editor
+  replaceEditorWithTextarea(zone);
+  injectSendControls(zone);
+  hideAgDuplicateControls(zone);
+}
+
+/**
+ * Replace AG's contenteditable editor (a non-functional DOM clone) with
+ * AG2R's textarea + attach button.
+ *
+ * ASSUMPTION: AG's new-session input is a contenteditable, Lexical editor,
+ * or role="textbox" element. If AG changes the editor type, update the
+ * selector chain below.
+ */
+function replaceEditorWithTextarea(zone) {
   const editor = zone.querySelector('[contenteditable]')
     || zone.querySelector('[data-lexical-editor]')
     || zone.querySelector('[role="textbox"]');
+  if (!editor) return;
 
-  if (editor) {
-    // Build our textarea + controls to replace the editor
-    const wrapper = document.createElement('div');
-    wrapper.className = 'ag2r-ns-input-wrapper';
-    wrapper.innerHTML = `
-      <div id="ag2r-ns-image-preview" class="image-preview-strip hidden"></div>
-      <textarea
-        id="ag2r-new-session-input"
-        placeholder="Ask anything..."
-        rows="3"
-      ></textarea>
-      <div class="ag2r-ns-controls">
+  const wrapper = document.createElement('div');
+  wrapper.className = 'ag2r-ns-input-wrapper';
+  wrapper.innerHTML = `
+    <div id="ag2r-ns-image-preview" class="image-preview-strip hidden"></div>
+    <textarea
+      id="ag2r-new-session-input"
+      placeholder="Ask anything..."
+      rows="3"
+    ></textarea>
+    <div class="input-controls">
+      <div class="input-left-actions">
         <input type="file" id="ag2r-ns-photo-input" accept="image/*" multiple hidden>
         <button type="button" id="ag2r-ns-attach" class="attach-btn" aria-label="Add context">
           <span class="material-symbols-rounded">add</span>
         </button>
-        <div class="ag2r-ns-controls-right">
-          <button type="button" id="ag2r-new-session-mic" class="mic-btn" aria-label="Voice input">
-            <span class="material-symbols-rounded mic-icon">mic</span>
-          </button>
-          <button type="button" id="ag2r-new-session-send" aria-label="Send">
-            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 -960 960 960" fill="currentColor">
-              <path d="M120-160v-640l760,320-760,320Zm60-93 544-227-544-230v168l242,62-242,60v167Zm0,0v-457,457Z"/>
-            </svg>
-          </button>
-        </div>
       </div>
-    `;
+    </div>
+  `;
+  editor.replaceWith(wrapper);
+}
 
-    // Replace the editor with our wrapper
-    editor.replaceWith(wrapper);
+/**
+ * Inject mic + send buttons on the same row as the model selector button,
+ * right-aligned. This is the only place we modify AG's captured DOM layout.
+ *
+ * ASSUMPTIONS (fragile — may break if AG restructures the new-session page):
+ *  1. The model button is tagged chat:3 (or chat:2 as fallback). The index
+ *     depends on how many interactive elements precede it in AG's DOM.
+ *     If AG adds/removes buttons before the model selector, update these IDs.
+ *  2. AG's ancestor divs between the model button and the captured zone are
+ *     shrink-wrapped (width: fit-content). We force width:100% up the chain
+ *     so flexbox space-between can push our controls to the right edge.
+ *  3. The model button's direct parent can safely be made display:flex
+ *     without breaking the env/branch row below it.
+ */
+function injectSendControls(zone) {
+  const modelBtn = zone.querySelector(
+    '[data-ag-click-id="chat:3"], [data-ag-click-id="chat:2"]'
+  );
+  if (!modelBtn) return;
+
+  // Force full width on ancestor chain so flex space-between works
+  let el = modelBtn.parentElement;
+  while (el && el !== zone) {
+    el.style.width = '100%';
+    el = el.parentElement;
   }
 
-  // Hide AG's send button (we have our own)
+  // Make the model button's container a flex row
+  const parent = modelBtn.parentElement;
+  parent.style.display = 'flex';
+  parent.style.alignItems = 'center';
+  parent.style.justifyContent = 'space-between';
+
+  const controls = document.createElement('div');
+  controls.className = 'ag2r-ns-toolbar-actions';
+  controls.innerHTML = `
+    <button type="button" id="ag2r-new-session-mic" class="mic-btn" aria-label="Voice input">
+      <span class="material-symbols-rounded mic-icon">mic</span>
+    </button>
+    <button type="button" id="ag2r-new-session-send" aria-label="Send">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 -960 960 960" fill="currentColor">
+        <path d="M120-160v-640l760,320-760,320Zm60-93 544-227-544-230v168l242,62-242,60v167Zm0,0v-457,457Z"/>
+      </svg>
+    </button>
+  `;
+  parent.appendChild(controls);
+}
+
+/**
+ * Hide AG's send and attach buttons — they're non-functional DOM clones
+ * that would confuse users if visible alongside our real controls.
+ */
+function hideAgDuplicateControls(zone) {
   zone.querySelectorAll('[data-tooltip-id*="send-button"]').forEach(el => {
     el.style.display = 'none';
   });
-
-  // Also hide AG's "+" button for attachments if present (we have our own)
   zone.querySelectorAll('[aria-label="Add context"], [aria-label="Add Content"]').forEach(el => {
     el.style.display = 'none';
   });

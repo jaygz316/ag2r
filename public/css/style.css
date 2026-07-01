@@ -1346,23 +1346,24 @@ body {
   color: var(--text-muted);
 }
 
-/* Fallback controls row (used if AG's toolbar row can't be found) */
-.ag2r-ns-controls {
+.ag2r-ns-toolbar-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 6px 10px;
+  gap: 6px;
 }
 
-.ag2r-ns-controls-right {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+.ag2r-ns-toolbar-actions .mic-btn {
+  width: 28px;
+  height: 28px;
+}
+
+.ag2r-ns-toolbar-actions .mic-btn .mic-icon {
+  font-size: 18px;
 }
 
 #ag2r-new-session-send {
-  width: 36px;
-  height: 36px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   border: none;
   background: var(--accent);
