@@ -11,6 +11,7 @@ let cdpConnected = false;
 let isRendering = false;
 let isSending = false;
 let userScrolledAway = false;
+let _lastContentFingerprint = null; // tracks conversation identity for scroll reset
 let debugMode = false;
 let featureFlags = {}; // populated from server on WS connect
 
@@ -409,10 +410,14 @@ async function loadSnapshot() {
         if (newInput && hadFocus) newInput.focus();
       }
     } else {
-      // Render HTML — this is either a new conversation, page refresh,
-      // or transition from new-session to chat. Reset scroll state so
-      // we land at the bottom of the new content.
-      userScrolledAway = false;
+      // Detect conversation switch by fingerprinting the first portion of content.
+      // Only reset scroll on actual conversation changes, not on content updates
+      // (which happen every snapshot during agent streaming).
+      const fingerprint = data.html ? data.html.slice(0, 200) : '';
+      if (fingerprint !== _lastContentFingerprint) {
+        _lastContentFingerprint = fingerprint;
+        userScrolledAway = false;
+      }
       chatContent.innerHTML = data.html;
       hideEmptyState();
 
@@ -927,7 +932,12 @@ chatArea.addEventListener('scroll', () => {
   updateScrollFab();
   // Only track user scroll intent when NOT rendering (programmatic scroll shouldn't lock user out)
   if (isRendering) return;
-  const nearBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < 50;
+  // Dynamic threshold: during agent streaming, content grows in large chunks
+  // which can momentarily push the scroll position away from bottom. Use a
+  // larger tolerance (300px) so auto-scroll stays sticky. When idle, 50px
+  // is enough to let the user escape with a small deliberate scroll.
+  const threshold = agentRunning ? 300 : 50;
+  const nearBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < threshold;
   userScrolledAway = !nearBottom;
 }, { passive: true });
 
