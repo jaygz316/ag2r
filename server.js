@@ -218,29 +218,26 @@ function checkAttentionState(snapshot) {
   const newItems = attentionItems.filter(item => !notifiedConversations.has(item.id));
   if (newItems.length === 0 && !hasPermission) return;
 
-  // Pick the first new item for the notification text
-  const item = newItems[0] || attentionItems[0];
-  const name = truncName(item?.name);
-  const types = new Set(newItems.map(i => i.type));
+  // Send one notification per new conversation (unique tag so they stack)
+  for (const item of newItems) {
+    const name = truncName(item.name);
+    let body;
+    if (item.type === 'question') {
+      body = name ? `Agent in ${name} has a question for you` : 'An agent has a question for you';
+    } else if (item.type === 'command' || hasPermission) {
+      body = name ? `A command in ${name} requires your approval` : 'A command requires your approval';
+    } else {
+      body = name ? `${name} needs your attention` : 'A conversation needs your attention';
+    }
 
-  let body;
-  if (types.has('question')) {
-    body = name ? `Agent in ${name} has a question for you` : 'An agent has a question for you';
-  } else if (types.has('command') || hasPermission) {
-    body = name ? `A command in ${name} requires your approval` : 'A command requires your approval';
-  } else {
-    body = name ? `${name} needs your attention` : 'A conversation needs your attention';
+    notifiedConversations.add(item.id);
+    log('Push', `Attention detected — sending for ${name || item.id}`);
+    sendPushToAll({
+      title: appName,
+      body,
+      tag: `ag2r-${item.id}`,
+    });
   }
-
-  // Mark all new items as notified
-  for (const i of newItems) notifiedConversations.add(i.id);
-
-  log('Push', `Attention detected — sending`);
-  sendPushToAll({
-    title: appName,
-    body,
-    tag: 'ag2r-attention',
-  });
 }
 
 // ─────────────────────────────────────────────
