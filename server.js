@@ -317,9 +317,17 @@ function ensureCerts() {
 
 // Read CDP port from AG's DevToolsActivePort file (written when --remote-debugging-port=0)
 function readDevToolsPort() {
-  const dtpPath = path.join(
-    os.homedir(), 'Library', 'Application Support', 'Antigravity', 'DevToolsActivePort'
-  );
+  const osType = os.platform();
+  let dtpPath = '';
+  if (osType === 'darwin') {
+    dtpPath = path.join(
+      os.homedir(), 'Library', 'Application Support', 'Antigravity', 'DevToolsActivePort'
+    );
+  } else {
+    dtpPath = path.join(
+      os.homedir(), '.config', 'Antigravity', 'DevToolsActivePort'
+    );
+  }
   try {
     const content = fs.readFileSync(dtpPath, 'utf-8').trim();
     const port = parseInt(content.split('\n')[0], 10);
