@@ -17,6 +17,41 @@ let featureFlags = {}; // populated from server on WS connect
 // Settings sidebar resizable state
 let settingsSidebarWidth = parseInt(localStorage.getItem('ag2r-settings-sidebar-width') || '180');
 
+// Right sidebar resizable state
+let rightSidebarWidth = parseInt(localStorage.getItem('ag2r-right-sidebar-width') || '450');
+
+function setupRightSidebarResizer(resizer, sidebar) {
+  let startX = 0;
+  let startWidth = 0;
+
+  function onPointerDown(e) {
+    e.preventDefault();
+    startX = e.clientX;
+    startWidth = sidebar.getBoundingClientRect().width;
+    resizer.classList.add('resizing');
+    document.addEventListener('pointermove', onPointerMove);
+    document.addEventListener('pointerup', onPointerUp);
+  }
+
+  function onPointerMove(e) {
+    const deltaX = startX - e.clientX; // Moving left increases width
+    const minWidth = 320;
+    const maxWidth = Math.floor(window.innerWidth * 0.85);
+    const newWidth = Math.max(minWidth, Math.min(maxWidth, startWidth + deltaX));
+    rightSidebarWidth = newWidth;
+    sidebar.style.setProperty('--right-sidebar-width', `${newWidth}px`);
+    localStorage.setItem('ag2r-right-sidebar-width', newWidth);
+  }
+
+  function onPointerUp(e) {
+    resizer.classList.remove('resizing');
+    document.removeEventListener('pointermove', onPointerMove);
+    document.removeEventListener('pointerup', onPointerUp);
+  }
+
+  resizer.addEventListener('pointerdown', onPointerDown);
+}
+
 function setupSettingsResizer(resizer, sidebar) {
   let startX = 0;
   let startWidth = 0;
@@ -84,6 +119,7 @@ const rightSidebar = document.getElementById('right-sidebar');
 const rightSidebarContent = document.getElementById('right-sidebar-content');
 const rightSidebarCdpStyles = document.getElementById('right-sidebar-cdp-styles');
 const rightSidebarOverlay = document.getElementById('right-sidebar-overlay');
+const rightSidebarResizer = document.getElementById('right-sidebar-resizer');
 // Dropdown overlay (AG portal menus)
 const dropdownOverlay = document.getElementById('dropdown-overlay');
 const dropdownBackdrop = document.getElementById('dropdown-backdrop');
@@ -1848,6 +1884,14 @@ function toggleRightSidebar() {
 
 reviewToggle.addEventListener('click', toggleRightSidebar);
 rightSidebarOverlay.addEventListener('click', closeRightSidebar);
+
+// Apply initial right sidebar width and initialize resizer
+if (rightSidebar) {
+  rightSidebar.style.setProperty('--right-sidebar-width', `${rightSidebarWidth}px`);
+}
+if (rightSidebarResizer && rightSidebar) {
+  setupRightSidebarResizer(rightSidebarResizer, rightSidebar);
+}
 
 // ─────────────────────────────────────────────
 // Sidebar Content Rendering
