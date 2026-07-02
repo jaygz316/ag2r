@@ -1119,12 +1119,25 @@ app.post('/restart-antigravity', async (req, res) => {
     // Find the Antigravity Electron process PID
     // pgrep doesn't work on macOS Electron — must use ps aux (see GEMINI.md gotcha)
     let pid = null;
+    let binaryPath = '';
     try {
       const psOutput = execSync('ps aux', { encoding: 'utf8' });
       for (const line of psOutput.split('\n')) {
-        if (line.includes('Antigravity.app/Contents/MacOS/Antigravity') && !line.includes('grep')) {
-          pid = parseInt(line.trim().split(/\s+/)[1], 10);
-          break;
+        if (!line.includes('grep')) {
+          if (line.includes('Antigravity.app/Contents/MacOS/Antigravity')) {
+            pid = parseInt(line.trim().split(/\s+/)[1], 10);
+            binaryPath = 'Antigravity.app';
+            break;
+          } else if (line.includes('opt/antigravity/antigravity')) {
+            pid = parseInt(line.trim().split(/\s+/)[1], 10);
+            const match = line.match(/\/.*\/opt\/antigravity\/antigravity/);
+            if (match) {
+              binaryPath = match[0];
+            } else {
+              binaryPath = '/home/jay/.local/opt/antigravity/antigravity';
+            }
+            break;
+          }
         }
       }
     } catch (e) {
@@ -1149,7 +1162,12 @@ app.post('/restart-antigravity', async (req, res) => {
     // Wait for process to die, then relaunch
     setTimeout(() => {
       log('Restart', 'Relaunching Antigravity...');
-      exec('open -a Antigravity --args --remote-debugging-port=9000', (err) => {
+      let cmd = 'open -a Antigravity --args --remote-debugging-port=9000';
+      if (process.platform === 'linux') {
+        const path = binaryPath || '/home/jay/.local/opt/antigravity/antigravity';
+        cmd = `${path} --no-sandbox --remote-debugging-port=9000 > /dev/null 2>&1 &`;
+      }
+      exec(cmd, (err) => {
         if (err) log('Restart', 'Relaunch error:', err.message);
         else log('Restart', 'Relaunch command sent');
       });
