@@ -22,11 +22,7 @@ self.addEventListener('push', (event) => {
   };
 
   event.waitUntil(
-    self.registration.getNotifications({ tag }).then((existing) => {
-      // Don't stack — if there's already an unread notification with this tag, skip
-      if (existing.length > 0) return;
-      return self.registration.showNotification(title, options);
-    })
+    self.registration.showNotification(title, options)
   );
 });
 
