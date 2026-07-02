@@ -201,7 +201,6 @@ function truncName(name) {
 function checkAttentionState(snapshot) {
   if (visibleClients > 0) return; // App is in foreground — no push needed
 
-  const hasPermission = !!snapshot.permissionHtml;
   const attentionItems = (snapshot.sidebarAttentionItems || [])
     .filter(item => item.type !== 'completed');
 
@@ -212,14 +211,14 @@ function checkAttentionState(snapshot) {
     }
   }
 
-  if (!hasPermission && attentionItems.length === 0) return;
+  if (attentionItems.length === 0) return;
 
   // Find conversations we haven't notified about yet
   const newItems = attentionItems.filter(item => !notifiedConversations.has(item.id));
   if (newItems.length > 0) {
     console.debug('[Push] New attention items:', newItems.map(i => `${i.name}(${i.type})`).join(', '));
   }
-  if (newItems.length === 0 && !hasPermission) return;
+  if (newItems.length === 0) return;
 
   // Send one notification per new conversation (unique tag so they stack)
   for (const item of newItems) {
@@ -227,7 +226,7 @@ function checkAttentionState(snapshot) {
     let body;
     if (item.type === 'question') {
       body = name ? `Agent in ${name} has a question for you` : 'An agent has a question for you';
-    } else if (item.type === 'command' || hasPermission) {
+    } else if (item.type === 'command') {
       body = name ? `A command in ${name} requires your approval` : 'A command requires your approval';
     } else {
       body = name ? `${name} needs your attention` : 'A conversation needs your attention';
