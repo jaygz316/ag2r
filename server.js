@@ -226,10 +226,8 @@ function checkAttentionState(snapshot) {
     let body;
     if (item.type === 'question') {
       body = name ? `Asking question | ${name}` : 'Asking question';
-    } else if (item.type === 'command') {
-      body = name ? `Command approval | ${name}` : 'Command approval';
     } else {
-      body = name ? `Needs attention | ${name}` : 'Needs attention';
+      body = name ? `Command approval | ${name}` : 'Command approval';
     }
 
     notifiedConversations.add(item.id);
