@@ -119,7 +119,7 @@ gh issue list --label "bug" --state open
 > Things you would NOT discover by reading the code alone.
 
 - **Electron process detection on macOS.** `pgrep -x Antigravity` does NOT work — macOS Electron apps report the full binary path. Use `ps aux | grep "[A]ntigravity.app/Contents/MacOS/Antigravity"` instead.
-- **CDP port is auto-discovered.** AG app uses `--remote-debugging-port=0` (random port). AG2R reads the actual port from `~/Library/Application Support/Antigravity/DevToolsActivePort` at connect time, falling back to `CDP_PORT` env var.
+- **CDP port is auto-discovered.** AG app uses `--remote-debugging-port=0` (random port). AG2R reads the actual port from its platform-specific user data directory: `~/Library/Application Support/Antigravity/DevToolsActivePort` on macOS, and `~/.config/Antigravity/DevToolsActivePort` on Linux. Reconnect loop handles it if port changes on restart.
 - **iOS push requires PWA on home screen.** Web Push on iOS only works when the user has installed the PWA via "Add to Home Screen" (iOS 16.4+). Regular Safari tabs cannot receive push notifications.
 - **Push subscriptions persist in `~/.config/ag2r/`.** Both `vapid-keys.json` and `push-subscriptions.json` live in the shared config dir (see `src/paths.js`). Notifications survive server restarts.
 
@@ -148,3 +148,5 @@ gh issue list --label "bug" --state open
 7. **Handover prompts in code blocks.** When producing a next-session / continuation prompt, wrap the entire prompt in a 4-backtick code block so the user can copy it from the remote app.
 
 8. **AG2R is a multi-platform product with real users.** Never assume it only runs on the developer's machine or OS. The system metadata says `OS: mac` because that's the dev machine — users run AG2R on macOS, Linux, and Windows. Always write cross-platform code and never dismiss a platform as irrelevant.
+
+9. **DevToolsActivePort cross-platform check:** The Antigravity app's remote debugging port is written to different paths depending on the OS (e.g. `~/.config/Antigravity/DevToolsActivePort` on Linux, `~/Library/Application Support/Antigravity/DevToolsActivePort` on macOS). Always ensure code querying this file is cross-platform.
