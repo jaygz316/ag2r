@@ -203,10 +203,11 @@ export const CAPTURE_SCRIPT = `
               const svgEl = statusContainer ? statusContainer.querySelector('svg') : null;
               let type = 'completed';
               if (svgEl) {
-                const svgClass = svgEl.getAttribute('class') || '';
-                if (svgClass.includes('lucide-terminal')) type = 'command';
-                else if (svgClass.includes('lucide-message')) type = 'question';
-                else type = 'permission'; // fallback for any other SVG icon
+                // Positively identify the question icon by its Material Symbols path data.
+                // Everything else with an SVG defaults to command.
+                const pathD = (svgEl.querySelector('path')?.getAttribute('d') || '');
+                const QUESTION_ICON_PATH = 'M477.92-295.77q17.15,0 28.96-11.81t11.81-28.96T506.88-365.5t-28.96-11.81T448.96-365.5t-11.81,28.96t11.81,28.96t28.96,11.81ZM449.62-439h56.31q0.38-15.08 2.08-25.92T514.69-486t12.69-19.73t20.54-22.35q31.92-31.92 45.65-54.27t13.73-50.81q0-49.92-34.08-80.5t-87.77-30.58q-48.85,0-83.5,24.88t-49.27,64.81l51.38,20.61q8.54-25.46 28.38-41.58t49.77-16.12q32.39,0 50.58,17.58T551-631.31q0,18.54-11,36.38t-33.92,38.54q-15.85,14-26.35,27.12t-17.5,26.96t-9.81,28.81T449.62-439ZM480-68.46L368.46-180H212.31Q182-180 161-201t-21-51.31V-787.69Q140-818 161-839t51.31-21H747.69Q778-860 799-839t21,51.31v535.38Q820-222 799-201t-51.31,21H591.54L480-68.46ZM212.31-240H392.77L480-152.77L567.23-240H747.69q5.39,0 8.85-3.46t3.46-8.85V-787.69q0-5.39-3.46-8.85T747.69-800H212.31q-5.39,0-8.85,3.46T200-787.69v535.38q0,5.39 3.46,8.85t8.85,3.46ZM480-520Z';
+                type = (pathD === QUESTION_ICON_PATH) ? 'question' : 'command';
               }
               // Extract conversation name from the sidebar item text
               let name = '';
