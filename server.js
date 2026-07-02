@@ -225,11 +225,11 @@ function checkAttentionState(snapshot) {
     const name = truncName(item.name);
     let body;
     if (item.type === 'question') {
-      body = name ? `Agent in ${name} has a question for you` : 'An agent has a question for you';
+      body = name ? `Asking question | ${name}` : 'Asking question';
     } else if (item.type === 'command') {
-      body = name ? `A command in ${name} requires your approval` : 'A command requires your approval';
+      body = name ? `Command approval | ${name}` : 'Command approval';
     } else {
-      body = name ? `${name} needs your attention` : 'A conversation needs your attention';
+      body = name ? `Needs attention | ${name}` : 'Needs attention';
     }
 
     notifiedConversations.add(item.id);
