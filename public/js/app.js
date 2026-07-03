@@ -11,6 +11,7 @@ let cdpConnected = false;
 let isRendering = false;
 let isSending = false;
 let userScrolledAway = false;
+let _lastContentFingerprint = null; // tracks conversation identity for scroll reset
 let debugMode = false;
 let featureFlags = {}; // populated from server on WS connect
 
@@ -112,20 +113,27 @@ const subagentInfo = document.getElementById('subagent-info');
 // Suppression: ignore stale dialog/dropdown snapshots for a short window after user dismisses
 let overlayDismissedAt = 0;
 
-// Handle ?sidebar=open URL param (from push notification clicks)
-// Opens the left sidebar so the user can see which conversation needs attention.
+// Handle ?sidebar=open&conversationId=<id> URL params (from push notification clicks)
+// If conversationId is present, navigate directly to that conversation.
+// Otherwise, just open the left sidebar.
 const _urlParams = new URLSearchParams(window.location.search);
 if (_urlParams.get('sidebar') === 'open') {
+  const _notifConversationId = _urlParams.get('conversationId');
   // Defer until first snapshot loads (sidebar content needs to be populated)
   let _sidebarOpenPending = true;
-  const _origLoadSnapshot = window._ag2rSidebarOpenHook = () => {
+  window._ag2rSidebarOpenHook = () => {
     if (_sidebarOpenPending) {
       _sidebarOpenPending = false;
-      openLeftSidebar();
+      if (_notifConversationId) {
+        navigateToConversation(_notifConversationId);
+      } else {
+        openLeftSidebar();
+      }
     }
   };
   // Clean URL so refresh doesn't re-trigger
   _urlParams.delete('sidebar');
+  _urlParams.delete('conversationId');
   const cleanUrl = _urlParams.toString()
     ? `${window.location.pathname}?${_urlParams.toString()}`
     : window.location.pathname;
@@ -266,10 +274,12 @@ function connectWebSocket() {
   ws = new WebSocket(wsUrl);
 
   ws.onopen = () => {
-    console.debug('[WS] Connected');
+    debugLog('ws', 'connected');
     debugLog('ws-open');
     wsReconnectDelay = 1000;
     updateConnectionStatus('connected');
+    // Tell server whether app is in foreground
+    sendVisibility();
   };
 
   ws.onmessage = (event) => {
@@ -324,12 +334,12 @@ function connectWebSocket() {
           break;
       }
     } catch (e) {
-      console.debug('[WS] Parse error:', e);
+      debugLog('ws', 'parse error: ' + e);
     }
   };
 
   ws.onclose = () => {
-    console.debug('[WS] Disconnected, reconnecting in', wsReconnectDelay, 'ms');
+    debugLog('ws', 'disconnected, reconnecting in ' + wsReconnectDelay + 'ms');
     debugLog('ws-close');
     updateConnectionStatus('disconnected');
     ws = null;
@@ -341,6 +351,14 @@ function connectWebSocket() {
     // onclose will fire after this
   };
 }
+
+// Tell server whether the app is in the foreground (controls push suppression)
+function sendVisibility() {
+  if (ws?.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: 'visibility', visible: document.visibilityState === 'visible' }));
+  }
+}
+document.addEventListener('visibilitychange', sendVisibility);
 
 // ─────────────────────────────────────────────
 // Snapshot Loading & Rendering
@@ -371,6 +389,11 @@ async function loadSnapshot() {
     // agentRunning is set exclusively by WS handlers (snapshot/status messages).
     // Do NOT set it here — the HTTP response can be stale vs the WS push.
 
+    // Pre-render anchor: snapshot whether we're at the bottom BEFORE injecting
+    // new content. Large content chunks can push scroll position away from bottom,
+    // so checking after render would give a false "user scrolled away" signal.
+    const wasAtBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < 50;
+
     // Inject CSS (Antigravity's stylesheets) into all panels
     if (data.css) {
       cdpStyles.textContent = data.css;
@@ -379,58 +402,57 @@ async function loadSnapshot() {
     }
 
 
-    // Don't re-render the chat area if already on the new session page — our custom
-    // form is already rendered and re-rendering would destroy the textarea (keyboard pop-up).
+    // Don't re-render when the new session page textarea is active — our textarea
+    // is injected INSIDE the captured zone, so replacing it would destroy the input.
+    // The captured buttons (project/model/env) may become stale if the user changes
+    // settings, but they transition to a fresh capture when the user sends a message.
     const newSessionInput = document.getElementById('ag2r-new-session-input');
     const skipChatRender = data.isNewSessionPage && newSessionInput;
 
     if (skipChatRender) {
-      // Update project name + model from fresh snapshot (user may have clicked + on a different project)
-      const tmpDiv = document.createElement('div');
-      tmpDiv.innerHTML = data.html;
-      const projectBtn = tmpDiv.querySelector('[aria-haspopup="dialog"] .truncate');
-      const freshProject = projectBtn ? projectBtn.textContent.trim() : '';
-      const projectEl = chatContent.querySelector('.ag2r-new-session-project span:not(.material-symbols-rounded)');
-      if (projectEl && freshProject) projectEl.textContent = freshProject;
+      // Skip full re-render — textarea is inside the captured zone.
+      // But update the captured zone from new snapshot so project/model/env
+      // labels reflect changes and new elements (like branch picker) appear.
+      const capturedZone = chatContent.querySelector('.ag2r-ns-captured');
+      if (capturedZone) {
+        // Save textarea state before re-render
+        const input = capturedZone.querySelector('#ag2r-new-session-input');
+        const savedValue = input ? input.value : '';
+        const hadFocus = input && document.activeElement === input;
 
-      // Update model from server-side extracted name (bottom-row chip only)
-      const freshModel = data.modelName || '';
-      const nsModelChipText = chatContent.querySelector('.ag2r-ns-model-chip .model-chip-text');
-      if (nsModelChipText && freshModel) nsModelChipText.textContent = freshModel;
+        // Re-render the captured zone with fresh HTML
+        capturedZone.innerHTML = data.html;
+        processNewSessionCapture(capturedZone);
+        addClickProxyHandlers(capturedZone);
+        wireNewSessionHandlers(chatContent);
 
-      // Still update env chips with fresh data (user may have changed worktree/branch)
-      const envBar = chatContent.querySelector('.ag2r-new-session-env-bar');
-      if (envBar && (data.environmentName || data.branchName)) {
-        const environmentName = data.environmentName || '';
-        const branchName = data.branchName || '';
-        const envIcon = environmentName === 'Local'
-          ? '<span class="material-symbols-rounded" style="font-size:14px">desktop_windows</span>'
-          : '<span class="material-symbols-rounded" style="font-size:14px">account_tree</span>';
-        let newEnvHtml = '';
-        if (environmentName) {
-          newEnvHtml = `
-            <button type="button" class="ag2r-env-chip" data-ag-click-id="env:0" data-ag-click-label="${environmentName}">
-              ${envIcon}
-              <span>${environmentName}</span>
-              <span class="material-symbols-rounded" style="font-size:12px">expand_more</span>
-            </button>
-            ${branchName ? `
-            <button type="button" class="ag2r-env-chip" data-ag-click-id="env:1" data-ag-click-label="${branchName}">
-              <span class="material-symbols-rounded" style="font-size:14px">fork_right</span>
-              <span>${branchName}</span>
-              <span class="material-symbols-rounded" style="font-size:12px">expand_more</span>
-            </button>` : ''}
-          `;
-        }
-        envBar.innerHTML = newEnvHtml;
-        addClickProxyHandlers(envBar);
+        // Restore textarea state
+        const newInput = capturedZone.querySelector('#ag2r-new-session-input');
+        if (newInput && savedValue) newInput.value = savedValue;
+        if (newInput && hadFocus) newInput.focus();
       }
     } else {
-      // Render HTML
+      // Detect conversation switch by fingerprinting the first portion of content.
+      // Only reset scroll on actual conversation changes, not on content updates
+      // (which happen every snapshot during agent streaming).
+      const fingerprint = data.html ? data.html.slice(0, 200) : '';
+      if (fingerprint !== _lastContentFingerprint) {
+        _lastContentFingerprint = fingerprint;
+        userScrolledAway = false;
+        // Conversation changed — close the right sidebar to prevent stale
+        // isSidebarOpen state from briefly opening the artifacts panel.
+        // The next snapshot will re-open it if AG's sidebar is truly open.
+        if (rightSidebar.classList.contains('open')) {
+          rightSidebar.classList.remove('open');
+          rightSidebar.inert = true;
+          rightSidebarOverlay.classList.remove('visible');
+        }
+      }
+
       chatContent.innerHTML = data.html;
       hideEmptyState();
 
-      // If this is the new session page, replace captured content with a functional input
+      // If this is the new session page, process captured HTML and overlay AG2R's input form
       if (data.isNewSessionPage) {
         renderNewSessionPage(chatContent, data);
         // Close sidebar when transitioning to new session page (+ button)
@@ -496,15 +518,16 @@ async function loadSnapshot() {
     }
     if (data.isSidebarOpen !== undefined) {
       const ag2rIsOpen = rightSidebar.classList.contains('open');
-      console.debug('[SidebarMirror] AG:', data.isSidebarOpen, 'AG2R:', ag2rIsOpen, 'sig:', data.sidebarSignature);
+      debugLog('sidebar-mirror', `AG:${data.isSidebarOpen} AG2R:${ag2rIsOpen} sig:${data.sidebarSignature}`);
       if (data.isSidebarOpen && !ag2rIsOpen) {
-        console.debug('[SidebarMirror] Opening AG2R sidebar');
+        debugLog('sidebar-mirror', 'opening');
         openRightSidebar();
       } else if (!data.isSidebarOpen && ag2rIsOpen) {
-        console.debug('[SidebarMirror] Closing AG2R sidebar');
+        debugLog('sidebar-mirror', 'closing');
         rightSidebar.classList.remove('open');
         rightSidebar.inert = true;
         rightSidebarOverlay.classList.remove('visible');
+        updateReviewToggleIcon();
       }
     }
 
@@ -600,7 +623,9 @@ async function loadSnapshot() {
               popoverHtml += `<button class="${isDestructive ? 'destructive' : ''}" data-ag-click-id="${id}" data-ag-click-label="${label}">${text}</button>`;
             });
           }
-          dropdownContent.innerHTML = popoverHtml || buttonsHtml;
+          // Use whichever extraction produced more content — the walker may miss items
+          // when the dialog has nested containers (e.g., project picker wraps items).
+          dropdownContent.innerHTML = (popoverHtml.length >= buttonsHtml.length) ? popoverHtml : (buttonsHtml || popoverHtml);
         } else {
           // Modal dialog (undo confirmation, delete, etc.)
           // Render AG's native HTML directly with AG's CSS applied.
@@ -636,165 +661,77 @@ async function loadSnapshot() {
 
     // Render permission banner if AG is asking for approval
     if (data.permissionHtml) {
-      // Skip re-render if: (a) HTML unchanged, or (b) write-in input is focused (avoids
-      // destroying the input and dismissing the keyboard when AG reflects our selection click)
-      const writeInFocused = permissionContent.querySelector('.permission-writein:focus');
-      if (data.permissionHtml === permissionContent.dataset.lastHtml || writeInFocused) {
-        // Already rendered or user is typing — don't rebuild
+      // Skip re-render if the HTML hasn't changed or the user has focus inside
+      // (e.g. typing in the write-in textarea).
+      const hasFocusInside = permissionContent.contains(document.activeElement) && document.activeElement !== permissionContent;
+      if (data.permissionHtml === permissionContent.dataset.lastHtml || hasFocusInside) {
+        // Identical HTML or user is interacting — don't rebuild
       } else {
       permissionContent.dataset.lastHtml = data.permissionHtml;
-      const tempDiv = document.createElement('div');
-      tempDiv.innerHTML = data.permissionHtml;
 
-      // Extract command text from textarea
-      const commandEl = tempDiv.querySelector('textarea[aria-label]');
-      const commandText = commandEl ? commandEl.value || commandEl.textContent : '';
-
-      // Extract title
-      const titleEl = tempDiv.querySelector('.text-foreground');
-      const title = titleEl ? titleEl.textContent.trim() : 'Permission Required';
-
-      // Extract radio options
-       const labels = tempDiv.querySelectorAll('[data-ag-click-id]');
-      const options = [];
-      const buttons = [];
-      labels.forEach(el => {
-        const clickId = el.dataset.agClickId;
-        const text = el.textContent.trim();
-        if (el.tagName === 'LABEL') {
-          const numEl = el.querySelector('.font-mono');
-          const num = numEl ? numEl.textContent.trim() : '';
-          const labelText = text.replace(/^\d+/, '').trim();
-          const isSelected = el.classList.contains('bg-secondary');
-          const hasWriteIn = !!el.querySelector('textarea');
-          // Clean up labelText for write-in (remove placeholder text)
-          const cleanLabel = hasWriteIn ? 'No' : labelText;
-          options.push({ clickId, num, labelText: cleanLabel, isSelected, hasWriteIn });
-        } else if (el.tagName === 'BUTTON') {
-          buttons.push({ clickId, text: text.replace('↵', '').trim() });
-        }
-      });
-
-      let optionsHtml = options.map(o => {
-        const writeInHtml = o.hasWriteIn
-          ? `<input type="search" class="permission-writein" placeholder="tell the agent what to do instead" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-form-type="other" data-lpignore="true" enterkeyhint="send" />`
-          : '';
-        return `
-        <button class="permission-option${o.isSelected ? ' selected' : ''}${o.hasWriteIn ? ' has-writein' : ''}"
-                data-ag-click-id="${o.clickId}" data-ag-click-label="${o.num}${o.labelText}">
-          <span class="permission-option-num">${o.num}</span>
-          <span>${o.labelText}</span>
-          ${writeInHtml}
-        </button>
-        `;
-      }).join('');
-
-      let actionsHtml = buttons.map(b => {
-        const cls = b.text === 'Skip' ? 'perm-skip' : 'perm-submit';
-        return `<button class="${cls}" data-ag-click-id="${b.clickId}" data-ag-click-label="${b.text}">${b.text}</button>`;
-      }).join('');
-
+      // Render AG's captured HTML natively with AG's CSS — same approach as dialog native.
+      // No rebuild, no text extraction: just display exactly what AG shows, sized for mobile.
       permissionContent.innerHTML = `
-        <div class="permission-header">
-          <span class="material-symbols-rounded" style="font-size:20px;color:var(--accent)">terminal</span>
-          ${title}
-        </div>
-        <code class="permission-command">${commandText.replace(/</g, '&lt;')}</code>
-        <div class="permission-options">${optionsHtml}</div>
-        <div class="permission-actions">${actionsHtml}</div>
+        <style>${cdpStyles.textContent || ''}</style>
+        <div class="ag2r-permission-native">${data.permissionHtml}</div>
       `;
 
-      // Wire option clicks: select visually + proxy to AG
-      permissionContent.querySelectorAll('.permission-option').forEach(btn => {
-        // Remove data-ag-click-id so addClickProxyHandlers won't double-wire these
-        // Stash on DOM node so write-in click handler can proxy the selection
+      // Wire click proxying for all tagged elements (labels and buttons)
+      addClickProxyHandlers(permissionContent);
+
+      // Make the write-in textarea interactive: the parent label has a click proxy
+      // that calls preventDefault/stopPropagation, which blocks textarea focus.
+      // Stop events from bubbling up so the textarea remains tappable.
+      const writeInTA = permissionContent.querySelector('.ag2r-permission-native textarea');
+      if (writeInTA) {
+        writeInTA.addEventListener('mousedown', e => e.stopPropagation());
+        writeInTA.addEventListener('click', e => e.stopPropagation());
+        writeInTA.addEventListener('touchstart', e => e.stopPropagation(), { passive: true });
+      }
+
+      // Special handling: write-in textarea for the "Other" option.
+      // AG renders a <textarea> inside the last radio label. On Submit, we need to
+      // inject the user's text into AG's textarea before sending the click.
+      const submitBtns = permissionContent.querySelectorAll('button[data-ag-click-id]');
+      submitBtns.forEach(btn => {
+        const origHandler = btn._agClickHandler;
+        const text = (btn.textContent || '').trim();
+        // Only intercept Submit-like buttons (not Skip, not radio labels)
+        if (!/submit/i.test(text)) return;
+
         const clickId = btn.dataset.agClickId;
         const clickLabel = btn.dataset.agClickLabel;
-        btn._agClickId = clickId;
-        btn._agClickLabel = clickLabel;
-        btn.removeAttribute('data-ag-click-id');
-        btn.addEventListener('click', async (e) => {
-          // Don't trigger option select when clicking inside the write-in input
-          if (e.target.classList.contains('permission-writein')) return;
-          permissionContent.querySelectorAll('.permission-option').forEach(b => b.classList.remove('selected'));
-          btn.classList.add('selected');
-          // Focus write-in input if this is the No option
-          const writeIn = btn.querySelector('.permission-writein');
-          if (writeIn) setTimeout(() => writeIn.focus(), 100);
-          try {
-            await fetchAPI('/click', {
-              method: 'POST',
-              body: JSON.stringify({ clickId, label: clickLabel }),
-            });
-          } catch {}
-        });
-      });
+        // Remove the handler that addClickProxyHandlers wired, replace with our own
+        btn.replaceWith(btn.cloneNode(true));
+        const newBtn = permissionContent.querySelector(`[data-ag-click-id="${clickId}"]`);
+        if (!newBtn) return;
 
-      // Clicking write-in input: stop bubble but auto-select the parent "No" option
-      permissionContent.querySelectorAll('.permission-writein').forEach(input => {
-        input.addEventListener('click', (e) => {
-          e.stopPropagation();
-          const parentOption = input.closest('.permission-option');
-          if (parentOption && !parentOption.classList.contains('selected')) {
-            // Select this option visually
-            permissionContent.querySelectorAll('.permission-option').forEach(b => b.classList.remove('selected'));
-            parentOption.classList.add('selected');
-            // Proxy the selection click to AG
-            const clickId = parentOption._agClickId;
-            const clickLabel = parentOption._agClickLabel;
-            if (clickId) {
-              fetchAPI('/click', {
+        newBtn.addEventListener('click', async () => {
+          // Check if a write-in textarea has user text
+          const writeInEl = permissionContent.querySelector('.ag2r-permission-native textarea');
+          if (writeInEl && writeInEl.value && writeInEl.value.trim()) {
+            try {
+              await fetchAPI('/eval', {
                 method: 'POST',
-                body: JSON.stringify({ clickId, label: clickLabel }),
-              }).catch(() => {});
-            }
+                body: JSON.stringify({
+                  script: `(() => {
+                    const rg = document.querySelector('[role="radiogroup"]');
+                    if (!rg) return { ok: false, reason: 'no_radiogroup' };
+                    const ta = rg.querySelector('textarea');
+                    if (!ta) return { ok: false, reason: 'no_textarea' };
+                    ta.focus();
+                    const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+                    nativeSetter.call(ta, ${JSON.stringify(writeInEl.value)});
+                    ta.dispatchEvent(new Event('input', { bubbles: true }));
+                    ta.dispatchEvent(new Event('change', { bubbles: true }));
+                    return { ok: true, text: ta.value };
+                  })()`
+                }),
+              });
+            } catch {}
+            await new Promise(r => setTimeout(r, 200));
           }
-        });
-        // When write-in is focused (keyboard opens on mobile), ensure actions stay visible
-        input.addEventListener('focus', () => {
-          setTimeout(() => {
-            const actions = permissionContent.querySelector('.permission-actions');
-            if (actions) actions.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-          }, 300);
-        });
-      });
-
-      // Wire action buttons (Submit/Skip) manually — NOT via addClickProxyHandlers
-      // so we can inject write-in text BEFORE sending the Submit click
-      permissionContent.querySelectorAll('.permission-actions button').forEach(btn => {
-        const clickId = btn.dataset.agClickId;
-        const clickLabel = btn.dataset.agClickLabel;
-        btn.addEventListener('click', async () => {
-          // If submitting with No/write-in selected, inject text first
-          if (clickLabel !== 'Skip') {
-            const selectedOption = permissionContent.querySelector('.permission-option.selected');
-            const writeIn = selectedOption?.querySelector('.permission-writein');
-            if (writeIn && writeIn.value.trim()) {
-              try {
-                await fetchAPI('/eval', {
-                  method: 'POST',
-                  body: JSON.stringify({
-                    script: `(() => {
-                      const rg = document.querySelector('[role="radiogroup"]');
-                      if (!rg) return { ok: false, reason: 'no_radiogroup' };
-                      const ta = rg.querySelector('textarea');
-                      if (!ta) return { ok: false, reason: 'no_textarea' };
-                      ta.focus();
-                      // React-compatible: use native setter to bypass React's synthetic value tracking
-                      const nativeSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
-                      nativeSetter.call(ta, ${JSON.stringify(writeIn.value)});
-                      ta.dispatchEvent(new Event('input', { bubbles: true }));
-                      ta.dispatchEvent(new Event('change', { bubbles: true }));
-                      return { ok: true, text: ta.value };
-                    })()`
-                  }),
-                });
-              } catch {}
-              // Small delay to let AG process the text
-              await new Promise(r => setTimeout(r, 200));
-            }
-          }
-          // Now send the actual Submit/Skip click to AG
+          // Send the Submit click
           try {
             await fetchAPI('/click', {
               method: 'POST',
@@ -803,6 +740,7 @@ async function loadSnapshot() {
           } catch {}
           permissionOverlay.classList.add('hidden');
           permissionContent.dataset.lastHtml = '';
+
         });
       });
 
@@ -811,6 +749,7 @@ async function loadSnapshot() {
     } else {
       permissionOverlay.classList.add('hidden');
       permissionContent.dataset.lastHtml = '';
+
     }
 
     // Render running tasks strip if AG has background tasks
@@ -968,17 +907,13 @@ async function loadSnapshot() {
     }
     if (data.environmentName) _prevEnvironmentName = data.environmentName;
 
-    // Sync scroll position from AG's DOM state.
-    // AG handles scroll-to-bottom on send and auto-scroll during streaming.
-    // We mirror: if AG is near bottom AND the user hasn't scrolled away, scroll to bottom.
-    // If the user has deliberately scrolled up, we leave them there until they
-    // scroll back to the bottom, tap the FAB, or send a message.
+    // Scroll-to-bottom uses a pre-render anchor: wasAtBottom was captured BEFORE
+    // content injection (see above). If the user was at the bottom before the
+    // render, keep them there — regardless of how far new content pushed them.
+    // If they deliberately scrolled away (userScrolledAway), leave them alone.
     requestAnimationFrame(() => {
-      if (data.scrollInfo && !userScrolledAway) {
-        const agAtBottom = data.scrollInfo.scrollHeight - data.scrollInfo.scrollTop - data.scrollInfo.clientHeight < 50;
-        if (agAtBottom) {
-          chatArea.scrollTop = chatArea.scrollHeight;
-        }
+      if (!userScrolledAway && wasAtBottom) {
+        chatArea.scrollTop = chatArea.scrollHeight;
       }
       // Clear isRendering AFTER scroll is set — the scroll listener skips
       // events while isRendering is true, preventing our programmatic scroll
@@ -990,7 +925,7 @@ async function loadSnapshot() {
     });
 
   } catch (e) {
-    console.debug('[Snapshot] Load error:', e.message);
+    debugLog('snapshot', 'load error: ' + e.message);
   }
 }
 
@@ -1022,13 +957,17 @@ chatArea.addEventListener('scroll', () => {
   updateScrollFab();
   // Only track user scroll intent when NOT rendering (programmatic scroll shouldn't lock user out)
   if (isRendering) return;
+  // Flat 50px threshold: the pre-render anchor in loadSnapshot() handles
+  // stickiness during streaming. This listener only needs to detect when the
+  // user deliberately scrolls away (small escape distance = responsive UX).
   const nearBottom = chatArea.scrollHeight - chatArea.scrollTop - chatArea.clientHeight < 50;
   userScrolledAway = !nearBottom;
 }, { passive: true });
 
 scrollFab.addEventListener('click', () => {
+  debugLog('scroll', `FAB clicked. scrollHeight=${chatArea.scrollHeight} scrollTop=${chatArea.scrollTop} clientHeight=${chatArea.clientHeight}`);
   userScrolledAway = false;
-  scrollToBottom();
+  chatArea.scrollTo({ top: chatArea.scrollHeight, behavior: 'smooth' });
   requestAnimationFrame(() => updateScrollFab());
 });
 
@@ -1117,7 +1056,7 @@ async function sendMessage() {
   if (hasImages) {
     const uploadOk = await uploadStagedImages();
     if (!uploadOk) {
-      console.debug('[Send] Some image uploads failed');
+      debugLog('send', 'some image uploads failed');
       // Don't clear images on failure — let user retry
       isSending = false;
       messageInput.disabled = false;
@@ -1137,7 +1076,7 @@ async function sendMessage() {
       debugLog('sendMessage-images-only');
       const res = await fetchAPI('/send-images', { method: 'POST' });
       const result = await res.json();
-      console.debug('[Send] Image-only result:', result);
+      debugLog('send', 'image-only result: ' + JSON.stringify(result));
     } else if (fullMessage) {
       // Text (possibly with images): inject text and click send
       const res = await fetchAPI('/send', {
@@ -1145,13 +1084,13 @@ async function sendMessage() {
         body: JSON.stringify({ message: fullMessage, hasImages }),
       });
       const result = await res.json();
-      console.debug('[Send] Result:', result);
+      debugLog('send', 'result: ' + JSON.stringify(result));
       if (!result.ok) {
-        console.debug('[Send] Failed:', result.reason);
+        debugLog('send', 'failed: ' + result.reason);
       }
     }
   } catch (e) {
-    console.debug('[Send] Error:', e.message);
+    debugLog('send', 'error: ' + e.message);
   }
 
   // Reset scroll-away flag so AG's scroll position syncs immediately on next render
@@ -1179,14 +1118,14 @@ async function stopGeneration() {
     const result = await res.json();
 
     if (!result.ok) {
-      console.debug('[Stop] No active generation found');
+      debugLog('stop', 'no active generation found');
     }
 
     // Refresh snapshot to show updated state
     setTimeout(loadSnapshot, 300);
     setTimeout(loadSnapshot, 1000);
   } catch (e) {
-    console.debug('[Stop] Error:', e.message);
+    debugLog('stop', 'error: ' + e.message);
   }
 }
 
@@ -1330,7 +1269,7 @@ function createVoiceInput(inputEl, btnEl) {
     };
 
     recognition.onerror = (event) => {
-      console.debug('[Voice] Error:', event.error);
+      debugLog('voice', 'error: ' + event.error);
       stopRecording();
     };
 
@@ -1365,7 +1304,7 @@ function createVoiceInput(inputEl, btnEl) {
     try {
       recognition.start();
     } catch (err) {
-      console.debug('[Voice] Start error:', err);
+      debugLog('voice', 'start error: ' + err);
       stopRecording();
     }
   }
@@ -1549,17 +1488,17 @@ async function uploadStagedImages() {
       });
 
       const result = await res.json();
-      console.debug('[Upload] Result:', result);
+      debugLog('upload', 'result: ' + JSON.stringify(result));
 
       if (items[i]) items[i].classList.remove('uploading');
 
       if (!res.ok || !result.ok) {
-        console.debug('[Upload] Error:', result.error || 'Unknown');
+        debugLog('upload', 'error: ' + (result.error || 'Unknown'));
         if (items[i]) items[i].classList.add('upload-error');
         allOk = false;
       }
     } catch (e) {
-      console.debug('[Upload] Network error:', e.message);
+      debugLog('upload', 'network error: ' + e.message);
       if (items[i]) {
         items[i].classList.remove('uploading');
         items[i].classList.add('upload-error');
@@ -1765,16 +1704,23 @@ async function fetchRightSidebar() {
       `;
     }
   } catch (e) {
-    console.debug('[RightSidebar] Fetch error:', e.message);
+    debugLog('right-sidebar', 'fetch error: ' + e.message);
   } finally {
     sidebarFetchInFlight = false;
   }
+}
+
+function updateReviewToggleIcon() {
+  const icon = reviewToggle.querySelector('.material-symbols-rounded');
+  if (!icon) return;
+  icon.textContent = rightSidebar.classList.contains('open') ? 'right_panel_close' : 'right_panel_open';
 }
 
 function openRightSidebar() {
   rightSidebar.classList.add('open');
   rightSidebar.inert = false;
   rightSidebarOverlay.classList.add('visible');
+  updateReviewToggleIcon();
   // Fetch sidebar content on-demand
   fetchRightSidebar();
 }
@@ -1783,6 +1729,7 @@ function closeRightSidebar() {
   rightSidebar.classList.remove('open');
   rightSidebar.inert = true;
   rightSidebarOverlay.classList.remove('visible');
+  updateReviewToggleIcon();
   // Sync: close AG's sidebar too so re-clicks produce a detectable tab change
   fetchAPI('/close-sidebar', { method: 'POST' }).catch(() => {});
 }
@@ -1804,135 +1751,82 @@ rightSidebarOverlay.addEventListener('click', closeRightSidebar);
 // New Session Page — functional input overlay
 // ─────────────────────────────────────────────
 function renderNewSessionPage(container, data) {
-  const capturedHtml = data.html;
-  // Extract project name from the captured HTML (look for the project dropdown button label)
-  let projectName = '';
-  const tmpDiv = document.createElement('div');
-  tmpDiv.innerHTML = capturedHtml;
-  const projectBtn = tmpDiv.querySelector('[aria-haspopup="dialog"] .truncate');
-  if (projectBtn) projectName = projectBtn.textContent.trim();
+  // ── Bridge approach: render AG's captured HTML + inject AG2R's input into it ──
+  // The captured HTML already has interactive elements tagged with chat:N
+  // (project dropdown, model selector, env/branch buttons). We render it
+  // directly and replace AG's contenteditable with our own functional textarea.
 
-  // Extract model name from server-extracted data
-  const modelName = data.modelName || '';
+  // Wrap captured HTML in a zone div so we can update it independently
+  // on subsequent polls (preserves textarea state).
+  const capturedHtml = container.innerHTML;
+  container.innerHTML = '';
 
-  // Environment and branch from snapshot data
-  const environmentName = data.environmentName || '';
-  const branchName = data.branchName || '';
-  const isWorktreeMode = environmentName && environmentName !== 'Local';
+  const capturedZone = document.createElement('div');
+  capturedZone.className = 'ag2r-ns-captured';
+  capturedZone.innerHTML = capturedHtml;
+  container.appendChild(capturedZone);
 
-  // Build environment/branch settings bar
-  let envBarHtml = '';
-  if (environmentName) {
-    // Environment/worktree icon: monitor for Local, fork-tree for worktree
-    const envIcon = environmentName === 'Local'
-      ? '<span class="material-symbols-rounded" style="font-size:14px">desktop_windows</span>'
-      : '<span class="material-symbols-rounded" style="font-size:14px">account_tree</span>';
-    envBarHtml = `
-      <div class="ag2r-new-session-env-bar">
-        <button type="button" class="ag2r-env-chip" data-ag-click-id="env:0" data-ag-click-label="${environmentName}">
-          ${envIcon}
-          <span>${environmentName}</span>
-          <span class="material-symbols-rounded" style="font-size:12px">expand_more</span>
-        </button>
-        ${branchName ? `
-        <button type="button" class="ag2r-env-chip" data-ag-click-id="env:1" data-ag-click-label="${branchName}">
-          <span class="material-symbols-rounded" style="font-size:14px">fork_right</span>
-          <span>${branchName}</span>
-          <span class="material-symbols-rounded" style="font-size:12px">expand_more</span>
-        </button>
-        ` : ''}
-      </div>
-    `;
-  }
+  // Process captured content: replace AG's contenteditable with our textarea+controls
+  processNewSessionCapture(capturedZone);
 
-  // Build our own functional UI
-  container.innerHTML = `
-    <div class="ag2r-new-session">
-      <div class="ag2r-new-session-header">
-        ${projectName ? `<button type="button" class="ag2r-new-session-project" data-ag-click-id="project:0" data-ag-click-label="${projectName}">
-          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 -960 960 960" fill="currentColor">
-            <path d="M172.31-180Q142-180 121-201t-21-51.31V-707.69Q100-738 121-759t51.31-21H391.92l80,80H787.69Q818-700 839-679t21,51.31v375.38Q860-222 839-201t-51.31,21H172.31Z"/>
-          </svg>
-          <span>${projectName}</span>
-          <span class="material-symbols-rounded" style="font-size:14px;opacity:0.6">expand_more</span>
-        </button>` : ''}
-      </div>
-      <form id="ag2r-new-session-form" class="ag2r-new-session-form ${envBarHtml ? 'has-env-bar' : ''}">
-        <div class="ag2r-new-session-inner">
-          <div id="ag2r-ns-image-preview" class="image-preview-strip hidden"></div>
-          <textarea
-            id="ag2r-new-session-input"
-            placeholder="Ask anything..."
-            rows="3"
-          ></textarea>
-          <div class="ag2r-new-session-controls">
-            <div class="ag2r-new-session-left">
-              <input type="file" id="ag2r-ns-photo-input" accept="image/*" multiple hidden>
-              <button type="button" id="ag2r-ns-attach" class="attach-btn" aria-label="Add context">
-                <span class="material-symbols-rounded">add</span>
-              </button>
-              <button type="button" class="ag2r-ns-model-chip model-chip" data-ag-click-id="model:0" data-ag-click-label="${modelName}">
-                <span class="model-chip-text">${modelName}</span>
-                <span class="material-symbols-rounded model-chip-chevron">expand_more</span>
-              </button>
-            </div>
-            <div class="ag2r-new-session-right">
-              <button type="button" id="ag2r-new-session-mic" class="mic-btn" aria-label="Voice input">
-                <span class="material-symbols-rounded mic-icon">mic</span>
-              </button>
-              <button type="submit" id="ag2r-new-session-send" aria-label="Send">
-                <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 -960 960 960" fill="currentColor">
-                  <path d="M120-160v-640l760,320-760,320Zm60-93 544-227-544-230v168l242,62-242,60v167Zm0,0v-457,457Z"/>
-                </svg>
-              </button>
-            </div>
-          </div>
-        </div>
-        ${envBarHtml}
-      </form>
-    </div>
-  `;
+  // Add click proxy handlers for the captured buttons (project, model, env, etc.)
+  addClickProxyHandlers(capturedZone);
 
-  const form = container.querySelector('#ag2r-new-session-form');
+  // Wire event handlers for send, mic, attach, keyboard
+  wireNewSessionHandlers(container);
+
+  // Don't auto-focus — let the user tap the input to bring up keyboard
+}
+
+/**
+ * Wire event handlers for the new session page controls (send, mic, attach).
+ * Called on initial render AND on re-render (skip path) since the DOM elements
+ * are recreated each time the captured zone is re-rendered.
+ */
+function wireNewSessionHandlers(container) {
   const input = container.querySelector('#ag2r-new-session-input');
   const sendBtn = container.querySelector('#ag2r-new-session-send');
-
-  // Prevent snapshot refresh from wiping the input while user is typing
-  let userIsTyping = false;
-  input.addEventListener('input', () => { userIsTyping = true; });
-  input.addEventListener('blur', () => { userIsTyping = false; });
+  if (!input || !sendBtn) return;
 
   // Wire attach button (+ icon) to context menu with Media option
   const nsAttachBtn = container.querySelector('#ag2r-ns-attach');
   const nsPhotoInput = container.querySelector('#ag2r-ns-photo-input');
   const nsPreviewStrip = container.querySelector('#ag2r-ns-image-preview');
 
-  const nsAttachMenu = createAttachMenu(
-    container.querySelector('.ag2r-new-session-left'),
-    nsPhotoInput
-  );
+  if (nsAttachBtn && nsPhotoInput) {
+    const nsAttachMenu = createAttachMenu(
+      nsAttachBtn.parentElement,
+      nsPhotoInput
+    );
 
-  nsAttachBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    nsAttachMenu.classList.toggle('hidden');
-  });
+    nsAttachBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      nsAttachMenu.classList.toggle('hidden');
+    });
 
-  nsPhotoInput.addEventListener('change', () => {
-    const files = Array.from(nsPhotoInput.files);
-    if (!files.length) return;
-    const remaining = MAX_STAGED_IMAGES - stagedImages.length;
-    for (const file of files.slice(0, remaining)) {
-      stagedImages.push({ file, objectUrl: URL.createObjectURL(file) });
-    }
-    // Render into the new session preview strip
-    renderImagePreviewsInto(nsPreviewStrip, nsAttachBtn);
-    nsPhotoInput.value = '';
-  });
+    nsPhotoInput.addEventListener('change', () => {
+      const files = Array.from(nsPhotoInput.files);
+      if (!files.length) return;
+      const remaining = MAX_STAGED_IMAGES - stagedImages.length;
+      for (const file of files.slice(0, remaining)) {
+        stagedImages.push({ file, objectUrl: URL.createObjectURL(file) });
+      }
+      renderImagePreviewsInto(nsPreviewStrip, nsAttachBtn);
+      nsPhotoInput.value = '';
+    });
+  }
 
-  // Handle form submission
+  // Handle send
   let nsIsSending = false;
-  form.addEventListener('submit', async (e) => {
-    e.preventDefault();
+  let stopNsMic = null;
+
+  // Wire up mic button (shared factory)
+  const nsMicBtn = container.querySelector('#ag2r-new-session-mic');
+  if (nsMicBtn) {
+    stopNsMic = createVoiceInput(input, nsMicBtn);
+  }
+
+  async function handleSend() {
     const text = input.value.trim();
     const hasImages = stagedImages.length > 0;
     if ((!text && !hasImages) || nsIsSending) return;
@@ -1950,7 +1844,7 @@ function renderNewSessionPage(container, data) {
     if (hasImages) {
       const uploadOk = await uploadStagedImages();
       if (!uploadOk) {
-        console.debug('[NewSession] Some image uploads failed');
+        debugLog('new-session', 'some image uploads failed');
         nsIsSending = false;
         input.disabled = false;
         sendBtn.disabled = false;
@@ -1958,7 +1852,9 @@ function renderNewSessionPage(container, data) {
         return;
       }
       clearStagedImages();
-      renderImagePreviewsInto(nsPreviewStrip, nsAttachBtn);
+      if (nsPreviewStrip && nsAttachBtn) {
+        renderImagePreviewsInto(nsPreviewStrip, nsAttachBtn);
+      }
       await new Promise(r => setTimeout(r, 300));
     }
 
@@ -1970,13 +1866,13 @@ function renderNewSessionPage(container, data) {
           body: JSON.stringify({ message: text }),
         });
         const result = await res.json();
-        console.debug('[NewSession] Send result:', result);
+        debugLog('new-session', 'send result: ' + JSON.stringify(result));
         if (result.ok) {
           input.value = '';
           // AG will navigate to the new session — next snapshot refresh will pick it up
         }
       } catch (err) {
-        console.debug('[NewSession] Send error:', err);
+        debugLog('new-session', 'send error: ' + err);
       }
     }
 
@@ -1984,24 +1880,123 @@ function renderNewSessionPage(container, data) {
     input.disabled = false;
     sendBtn.disabled = false;
     sendBtn.classList.remove('sending');
-  });
+  }
+
+  sendBtn.addEventListener('click', handleSend);
 
   // Desktop: Enter to submit. Mobile: Enter inserts newline.
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !isMobile) {
       e.preventDefault();
-      form.requestSubmit();
+      handleSend();
     }
   });
+}
 
-  // Wire up mic button for new session page (shared factory)
-  const nsMicBtn = container.querySelector('#ag2r-new-session-mic');
-  let stopNsMic = null;
-  if (nsMicBtn) {
-    stopNsMic = createVoiceInput(input, nsMicBtn);
+// ── Helper: process captured new session HTML for mobile display ──
+// Orchestrates three independent steps to transform AG's captured DOM
+// into a functional mobile input. Each step is isolated so individual
+// pieces can be updated if AG changes its DOM structure.
+function processNewSessionCapture(zone) {
+  replaceEditorWithTextarea(zone);
+  injectSendControls(zone);
+  hideAgDuplicateControls(zone);
+}
+
+/**
+ * Replace AG's contenteditable editor (a non-functional DOM clone) with
+ * AG2R's textarea + attach button.
+ *
+ * ASSUMPTION: AG's new-session input is a contenteditable, Lexical editor,
+ * or role="textbox" element. If AG changes the editor type, update the
+ * selector chain below.
+ */
+function replaceEditorWithTextarea(zone) {
+  const editor = zone.querySelector('[contenteditable]')
+    || zone.querySelector('[data-lexical-editor]')
+    || zone.querySelector('[role="textbox"]');
+  if (!editor) return;
+
+  const wrapper = document.createElement('div');
+  wrapper.className = 'ag2r-ns-input-wrapper';
+  wrapper.innerHTML = `
+    <div id="ag2r-ns-image-preview" class="image-preview-strip hidden"></div>
+    <textarea
+      id="ag2r-new-session-input"
+      placeholder="Ask anything..."
+      rows="3"
+    ></textarea>
+    <div class="input-controls">
+      <div class="input-left-actions">
+        <input type="file" id="ag2r-ns-photo-input" accept="image/*" multiple hidden>
+        <button type="button" id="ag2r-ns-attach" class="attach-btn" aria-label="Add context">
+          <span class="material-symbols-rounded">add</span>
+        </button>
+      </div>
+    </div>
+  `;
+  editor.replaceWith(wrapper);
+}
+
+/**
+ * Inject mic + send buttons on the same row as the model selector button,
+ * right-aligned. This is the only place we modify AG's captured DOM layout.
+ *
+ * ASSUMPTIONS (fragile — may break if AG restructures the new-session page):
+ *  1. The model button is tagged chat:3 (or chat:2 as fallback). The index
+ *     depends on how many interactive elements precede it in AG's DOM.
+ *     If AG adds/removes buttons before the model selector, update these IDs.
+ *  2. AG's ancestor divs between the model button and the captured zone are
+ *     shrink-wrapped (width: fit-content). We force width:100% up the chain
+ *     so flexbox space-between can push our controls to the right edge.
+ *  3. The model button's direct parent can safely be made display:flex
+ *     without breaking the env/branch row below it.
+ */
+function injectSendControls(zone) {
+  const modelBtn = zone.querySelector(
+    '[data-ag-click-id="chat:3"], [data-ag-click-id="chat:2"]'
+  );
+  if (!modelBtn) return;
+
+  // Force full width on ancestor chain so flex space-between works
+  let el = modelBtn.parentElement;
+  while (el && el !== zone) {
+    el.style.width = '100%';
+    el = el.parentElement;
   }
 
-  // Don't auto-focus — let the user tap the input to bring up keyboard
+  // Make the model button's container a flex row
+  const parent = modelBtn.parentElement;
+  parent.style.display = 'flex';
+  parent.style.alignItems = 'center';
+  parent.style.justifyContent = 'space-between';
+
+  const controls = document.createElement('div');
+  controls.className = 'ag2r-ns-toolbar-actions';
+  controls.innerHTML = `
+    <button type="button" id="ag2r-new-session-mic" class="mic-btn" aria-label="Voice input">
+      <span class="material-symbols-rounded mic-icon">mic</span>
+    </button>
+    <button type="button" id="ag2r-new-session-send" aria-label="Send">
+      <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 -960 960 960" fill="currentColor">
+        <path d="M120-160v-640l760,320-760,320Zm60-93 544-227-544-230v168l242,62-242,60v167Zm0,0v-457,457Z"/>
+      </svg>
+    </button>
+  `;
+  parent.appendChild(controls);
+}
+
+/**
+ * Hide AG's send and attach buttons — they're non-functional DOM clones
+ * that would confuse users if visible alongside our real controls.
+ */
+function hideAgDuplicateControls(zone) {
+  zone.querySelectorAll('[data-tooltip-id*="send-button"]').forEach(el => {
+    el.style.display = 'none';
+  });
+  zone.querySelectorAll('[aria-label="Add context"], [aria-label="Add Content"]').forEach(el => {
+    el.style.display = 'none';
+  });
 }
 
 // ─────────────────────────────────────────────
@@ -2038,9 +2033,9 @@ function renderSidebar(container, html) {
     const topBar = container.querySelector('[style*="app-region: drag"]');
     if (topBar) topBar.remove();
 
-    // Remove New Conversation and History buttons (not useful on mobile).
-    // Scheduled Tasks stays visible — it's the only action kept from the top 3.
-    container.querySelectorAll('[data-ag-click-label="New Conversation"], [data-ag-click-label="Conversation History"]').forEach(el => el.remove());
+    // Remove Conversation History button (redundant — sidebar already shows conversations).
+    // New Conversation and Scheduled Tasks stay visible.
+    container.querySelectorAll('[data-ag-click-label="Conversation History"]').forEach(el => el.remove());
 
     // The separator line between actions and project list
     // It's a div with mt-3 mx-2 h-px (transparent background divider)
@@ -2124,8 +2119,17 @@ function addClickProxyHandlers(container) {
       el.style.cursor = 'pointer';
     }
 
-    // Prevent keyboard dismissal: stop mousedown from stealing focus
-    el.addEventListener('mousedown', e => e.preventDefault());
+    // Skip proxy wiring for TEXTAREA — they need native focus/input behavior.
+    // Permission submit handler reads their value separately.
+    if (tag === 'TEXTAREA') return;
+
+    // Prevent keyboard dismissal: stop mousedown from stealing focus.
+    // But allow textareas to receive focus (e.g. permission write-in) —
+    // on mobile, the label can be the target instead of the textarea.
+    el.addEventListener('mousedown', e => {
+      if (e.target.closest('textarea')) return;
+      e.preventDefault();
+    });
 
     el.addEventListener('click', async (e) => {
       e.preventDefault();
@@ -2134,7 +2138,7 @@ function addClickProxyHandlers(container) {
       const clickId = el.dataset.agClickId; // e.g. "chat:5", "right:2"
       const label = el.dataset.agClickLabel || '';
 
-      console.debug('[Click] id=' + clickId, 'label="' + label + '"', 'tag=' + el.tagName, 'class=' + (el.className || '').substring(0, 80));
+      debugLog('click-proxy', 'id=' + clickId + ' label="' + label + '"' + ' tag=' + el.tagName);
       debugLog('click-proxy', `id=${clickId} label="${label}" tag=${el.tagName}`);
 
       // Intercept "Edit task title" pencil icon — single-click name editing
@@ -2200,7 +2204,7 @@ function addClickProxyHandlers(container) {
             setTimeout(() => { el.innerHTML = origHTML; }, 1500);
           }
         } catch (err) {
-          console.debug('[Copy] Error:', err.message);
+          debugLog('copy', 'error: ' + err.message);
         }
         return;
       }
@@ -2224,7 +2228,7 @@ function addClickProxyHandlers(container) {
         result = await res.json();
 
       } catch (err) {
-        console.debug('[Click] Error:', err.message);
+        debugLog('click-proxy', 'error: ' + err.message);
       }
       el.classList.remove('ag-clicking');
 
@@ -2333,12 +2337,12 @@ async function submitTextInput() {
       body: JSON.stringify({ placeholder, text, clickId }),
     });
     const result = await res.json();
-    console.debug('[TypeText] Result:', result);
+    debugLog('type-text', 'result: ' + JSON.stringify(result));
     // Refresh snapshot to show updated value
     setTimeout(loadSnapshot, 300);
     setTimeout(loadSnapshot, 800);
   } catch (err) {
-    console.debug('[TypeText] Error:', err.message);
+    debugLog('type-text', 'error: ' + err.message);
   }
 }
 
@@ -2572,7 +2576,7 @@ commentSubmit.addEventListener('click', () => {
     comment: commentText,
   });
   saveComments();
-  console.debug('[Comment] Queued:', queuedComments[queuedComments.length - 1]);
+  debugLog('comment', 'queued');
   track('comment_added');
   closeCommentModal();
 
@@ -2649,7 +2653,7 @@ async function sendQueuedComments() {
       body: JSON.stringify({ message: fullMessage }),
     });
     const result = await resp.json();
-    console.debug('[Comment] Send result:', result);
+    debugLog('comment', 'send result: ' + JSON.stringify(result));
     track('comments_sent', { count: fullMessage.split('* >').length - 1 });
   } catch (e) {
     console.error('[Comment] Send failed:', e);
@@ -2776,12 +2780,170 @@ updateActionButton();
 // ─────────────────────────────────────────────
 // Push Notifications — Auto-Subscribe
 // ─────────────────────────────────────────────
-function pushDebug(msg) {
-  console.debug('[Push]', msg);
+
+// ─────────────────────────────────────────────
+// Notification Bell — subscribe/pause/resume
+// ─────────────────────────────────────────────
+// States: 'unsubscribed' | 'active' | 'paused'
+// Unsubscribed: gray bell + notifications_off icon
+// Active:       blue bell + notifications icon
+// Paused:       gray bell + zzz overlay via CSS
+
+const _bellBtn = document.getElementById('notification-bell');
+const _bellIcon = document.getElementById('notification-bell-icon');
+let _bellState = 'unsubscribed'; // current state
+
+function setBellState(state) {
+  _bellState = state;
+  if (!_bellBtn || !_bellIcon) return;
+  _bellBtn.dataset.state = state;
+
+  if (state === 'unsubscribed') {
+    _bellIcon.textContent = 'notifications_off';
+    _bellBtn.title = 'Notifications off — tap to enable';
+  } else if (state === 'active') {
+    _bellIcon.textContent = 'notifications_active';
+    _bellBtn.title = 'Notifications on — tap to pause';
+  } else if (state === 'paused') {
+    _bellIcon.textContent = 'notifications';
+    _bellBtn.title = 'Notifications paused — tap to resume';
+  }
 }
+
+// Detect current notification state on page load
+async function detectBellState() {
+  // 1. Browser permission check
+  if (!('Notification' in window) || !('serviceWorker' in navigator) || !('PushManager' in window)) {
+    setBellState('unsubscribed');
+    return;
+  }
+
+  if (Notification.permission === 'denied') {
+    setBellState('unsubscribed');
+    return;
+  }
+
+  // 2. Check for existing push subscription
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (!subscription) {
+      setBellState('unsubscribed');
+      return;
+    }
+
+    // Verify VAPID key matches server's current key
+    const keyMatch = await checkVapidKeyMatch(subscription);
+    if (!keyMatch) {
+      // Stale subscription — treat as unsubscribed
+      await subscription.unsubscribe();
+      setBellState('unsubscribed');
+      return;
+    }
+
+    // 3. Re-sync subscription to server (server may have lost it after restart/wipe)
+    await sendSubscription(subscription);
+
+    // 4. Check server-side pause state
+    const res = await fetchAPI('/push/state');
+    const state = await res.json();
+    setBellState(state.paused ? 'paused' : 'active');
+  } catch (e) {
+    console.debug('[Bell] Detection error:', e.message);
+    setBellState('unsubscribed');
+  }
+}
+
+// Bell tap handler — cycles through states
+async function handleBellTap() {
+  if (_bellState === 'unsubscribed') {
+    // Subscribe flow
+    await subscribeNotifications();
+  } else if (_bellState === 'active') {
+    // Pause
+    try {
+      await fetchAPI('/push/pause', { method: 'POST' });
+      setBellState('paused');
+    } catch (e) {
+      console.debug('[Bell] Pause error:', e.message);
+    }
+  } else if (_bellState === 'paused') {
+    // Resume
+    try {
+      await fetchAPI('/push/resume', { method: 'POST' });
+      setBellState('active');
+    } catch (e) {
+      console.debug('[Bell] Resume error:', e.message);
+    }
+  }
+}
+
+async function subscribeNotifications() {
+  try {
+    // Register SW first
+    const registration = await navigator.serviceWorker.register('/sw.js');
+
+    // Check existing subscription
+    const existing = await registration.pushManager.getSubscription();
+    if (existing) {
+      const keyMatch = await checkVapidKeyMatch(existing);
+      if (keyMatch) {
+        // Re-sync with server
+        await sendSubscription(existing);
+        // Ensure not paused
+        await fetchAPI('/push/resume', { method: 'POST' });
+        setBellState('active');
+        return;
+      }
+      // VAPID mismatch — unsubscribe old and re-subscribe
+      await existing.unsubscribe();
+    }
+
+    // Request permission if needed
+    if (Notification.permission === 'default') {
+      const result = await Notification.requestPermission();
+      if (result !== 'granted') {
+        setBellState('unsubscribed');
+        return;
+      }
+    }
+
+    if (Notification.permission !== 'granted') {
+      setBellState('unsubscribed');
+      return;
+    }
+
+    // Subscribe with VAPID key
+    await subscribePush(registration);
+    // Ensure not paused
+    await fetchAPI('/push/resume', { method: 'POST' });
+    setBellState('active');
+  } catch (e) {
+    console.debug('[Bell] Subscribe error:', e.message);
+    setBellState('unsubscribed');
+  }
+}
+
+// Auto-detect permission revocation when user returns to app
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden && _bellState !== 'unsubscribed') {
+    if ('Notification' in window && Notification.permission === 'denied') {
+      setBellState('unsubscribed');
+    }
+  }
+});
+
+if (_bellBtn) {
+  _bellBtn.addEventListener('click', handleBellTap);
+}
+
+// ─────────────────────────────────────────────
+// Push Subscription Helpers
+// ─────────────────────────────────────────────
+
 async function checkVapidKeyMatch(subscription) {
   try {
-    const res = await fetch('/push/vapid-public-key');
+    const res = await fetchAPI('/push/vapid-public-key');
     const { publicKey } = await res.json();
     const serverKey = urlBase64ToUint8Array(publicKey);
     const subKey = new Uint8Array(subscription.options.applicationServerKey);
@@ -2792,97 +2954,25 @@ async function checkVapidKeyMatch(subscription) {
     return true;
   }
 }
-async function initPushNotifications() {
-  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
-    pushDebug('Not supported');
-    return;
-  }
-
-  try {
-    pushDebug('Registering SW...');
-    const registration = await navigator.serviceWorker.register('/sw.js');
-    pushDebug('SW ok');
-
-    const existing = await registration.pushManager.getSubscription();
-    if (existing) {
-      // Check if the subscription's VAPID key matches the server's current key
-      const keyMatch = await checkVapidKeyMatch(existing);
-      if (keyMatch) {
-        pushDebug('Already subscribed, re-sending');
-        await sendSubscription(existing);
-        pushDebug('Done ✓');
-        return;
-      }
-      // VAPID key mismatch — stale subscription from old keys
-      pushDebug('VAPID key mismatch, re-subscribing...');
-      await existing.unsubscribe();
-      await subscribePush(registration);
-      pushDebug('Re-subscribed with current keys ✓');
-      return;
-    }
-
-    pushDebug('perm=' + Notification.permission);
-    if (Notification.permission === 'denied') {
-      pushDebug('Denied, skip');
-      return;
-    }
-
-    if (Notification.permission === 'granted') {
-      pushDebug('Granted, subscribing...');
-      await subscribePush(registration);
-      pushDebug('Done ✓');
-      return;
-    }
-
-    // Only request on genuine user gesture — capture phase fires before
-    // any inner stopPropagation() calls. Never request without gesture,
-    // as Chrome's "quiet UI" will auto-deny and permanently block the domain.
-    pushDebug('Waiting gesture...');
-    const handler = async () => {
-      document.removeEventListener('touchstart', handler, true);
-      document.removeEventListener('mousedown', handler, true);
-      pushDebug('Gesture! Requesting...');
-      const result = await Notification.requestPermission();
-      pushDebug('Result=' + result);
-      if (result === 'granted') {
-        await subscribePush(registration);
-        pushDebug('Done ✓');
-      } else if (result === 'default') {
-        document.addEventListener('touchstart', handler, { capture: true, once: true });
-        document.addEventListener('mousedown', handler, { capture: true, once: true });
-      }
-    };
-    document.addEventListener('touchstart', handler, { capture: true, once: true });
-    document.addEventListener('mousedown', handler, { capture: true, once: true });
-  } catch (e) {
-    pushDebug('Error: ' + e.message);
-  }
-}
 
 async function subscribePush(registration) {
-  try {
-    const res = await fetch('/push/vapid-public-key');
-    const { publicKey } = await res.json();
+  const res = await fetchAPI('/push/vapid-public-key');
+  const { publicKey } = await res.json();
 
-    const subscription = await registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(publicKey),
-    });
+  const subscription = await registration.pushManager.subscribe({
+    userVisibleOnly: true,
+    applicationServerKey: urlBase64ToUint8Array(publicKey),
+  });
 
-    await sendSubscription(subscription);
-  } catch (e) {
-    pushDebug('Sub error: ' + e.message);
-  }
+  await sendSubscription(subscription);
 }
 
 async function sendSubscription(subscription) {
-  try {
-    await fetch('/push/subscribe', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(subscription),
-    });
-  } catch {}
+  await fetch('/push/subscribe', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(subscription),
+  });
 }
 
 function urlBase64ToUint8Array(base64String) {
@@ -2894,4 +2984,51 @@ function urlBase64ToUint8Array(base64String) {
   return arr;
 }
 
-initPushNotifications();
+// ─────────────────────────────────────────────
+// Notification Navigation (from push notification clicks)
+// ─────────────────────────────────────────────
+
+async function navigateToConversation(conversationId) {
+  try {
+    const res = await fetchAPI('/navigate-conversation', {
+      method: 'POST',
+      body: JSON.stringify({ conversationId }),
+    });
+    const result = await res.json();
+    console.debug('[Notification] Navigate to conversation:', conversationId, result);
+    if (!result?.ok) {
+      // Fallback: just open sidebar so user can find it manually
+      openLeftSidebar();
+    }
+  } catch (err) {
+    console.debug('[Notification] Navigate error:', err.message);
+    openLeftSidebar();
+  }
+}
+
+// ─────────────────────────────────────────────
+// Initialization
+// ─────────────────────────────────────────────
+
+// Register SW and detect bell state (replaces old auto-subscribe initPushNotifications)
+(async () => {
+  if ('serviceWorker' in navigator) {
+    try {
+      await navigator.serviceWorker.register('/sw.js');
+    } catch (e) {
+      console.debug('[SW] Registration failed:', e.message);
+    }
+  }
+  await detectBellState();
+})();
+
+// Listen for postMessage from service worker (notification click → navigate or open sidebar)
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    if (event.data?.type === 'navigate-conversation' && event.data.conversationId) {
+      navigateToConversation(event.data.conversationId);
+    } else if (event.data?.type === 'open-sidebar') {
+      openLeftSidebar();
+    }
+  });
+}

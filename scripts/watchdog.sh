@@ -4,13 +4,13 @@
 # Designed to run as a cron job every 5 minutes.
 #
 # Usage:
-#   AG2R_PORT=3000 ./scripts/watchdog.sh
+#   ./scripts/watchdog.sh
 #
 # Cron example (every 5 minutes):
-#   */5 * * * * cd ~/ag2r && AG2R_PORT=3000 ./scripts/watchdog.sh >> /tmp/ag2r-watchdog.log 2>&1
+#   */5 * * * * cd ~/ag2r && ./scripts/watchdog.sh >> /tmp/ag2r-watchdog.log 2>&1
 #
-# Environment variables:
-#   AG2R_PORT  — Port to run the server on (default: 3000)
+# Configuration is read from .env (PORT, AG2R_ENV, etc.)
+# CLI env vars override .env values.
 
 set -euo pipefail
 
@@ -21,8 +21,16 @@ export NVM_DIR="$HOME/.nvm"
 # Ensure system tools (lsof, kill) are in PATH — cron defaults to /usr/bin:/bin
 export PATH="/usr/sbin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 
+# Load .env if present (simple key=value, skip comments/blanks)
+# set -a exports all sourced vars; existing env vars take precedence (same as dotenv)
+if [ -f .env ]; then
+  set -a
+  source <(grep -v '^\s*#' .env | grep -v '^\s*$')
+  set +a
+fi
+
 # Configuration
-PORT="${AG2R_PORT:-3000}"
+PORT="${AG2R_PORT:-${PORT:-3000}}"
 BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
 
 if [ -z "$BRANCH" ] || [ "$BRANCH" = "HEAD" ]; then
@@ -67,9 +75,16 @@ if [ -f "$BOOT_COMMIT_FILE" ]; then
   BOOT_COMMIT=$(cat "$BOOT_COMMIT_FILE" 2>/dev/null || true)
 fi
 
-# If no boot commit recorded, record current HEAD and assume fresh
+# If no boot commit recorded but server IS running, it may be running code from
+# a different branch (user did git checkout). Restart to ensure correct code.
 if [ -z "$BOOT_COMMIT" ]; then
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] No boot commit for branch $BRANCH, restarting to ensure correct code..."
+  npm ci --silent 2>&1 || true
+  kill "$SERVER_PID" 2>/dev/null || true
+  sleep 2
+  PORT="${PORT}" nohup node server.js >> "$LOG" 2>&1 &
   git rev-parse HEAD > "$BOOT_COMMIT_FILE" 2>/dev/null || true
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] Server restarted with PID $! on branch $BRANCH"
   exit 0
 fi
 

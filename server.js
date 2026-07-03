@@ -1,5 +1,8 @@
 // server.js — AG2R Server
 // CDP connection, snapshot capture, WebSocket broadcasting, Express, auth
+import 'dotenv/config'; // Side-effect import: loads .env before other modules evaluate
+
+
 import express from 'express';
 import { createServer as createHttpsServer } from 'https';
 import { createServer as createHttpServer } from 'http';
@@ -14,11 +17,10 @@ import cookieParser from 'cookie-parser';
 import compression from 'compression';
 import selfsigned from 'selfsigned';
 import multer from 'multer';
-import dotenv from 'dotenv';
 import webpush from 'web-push';
 import { track, startSession, endSession } from './src/telemetry.js';
 import { fetchFlags, getFlags } from './src/feature-flags.js';
-import { getConfigPath, ensureConfigDir, isDev, MAIN_PORT } from './src/paths.js';
+import { getConfigPath, ensureConfigDir, getEnv } from './src/paths.js';
 
 // CDP scripts — browser-side JS evaluated via Runtime.evaluate
 // See src/cdp-scripts/ for the actual script content
@@ -41,6 +43,7 @@ import { buildTypeTextScript } from './src/cdp-scripts/type-text.js';
 import { buildUploadImageScript } from './src/cdp-scripts/upload-image.js';
 import { CLICK_SEND_BUTTON_SCRIPT } from './src/cdp-scripts/click-send-button.js';
 import { EXPAND_LEFT_SIDEBAR_SCRIPT } from './src/cdp-scripts/expand-left-sidebar.js';
+import { buildClickConversationScript } from './src/cdp-scripts/click-conversation.js';
 import { buildCopyResponseScript } from './src/cdp-scripts/copy-response.js';
 import { DISMISS_SCHEDULED_TASKS_SCRIPT } from './src/cdp-scripts/dismiss-scheduled-tasks.js';
 import { DISMISS_SETTINGS_SCRIPT } from './src/cdp-scripts/dismiss-settings.js';
@@ -49,8 +52,6 @@ import { CLOSE_RIGHT_SIDEBAR_SCRIPT } from './src/cdp-scripts/close-right-sideba
 import { SELECT_OVERVIEW_TAB_SCRIPT } from './src/cdp-scripts/select-overview-tab.js';
 import { buildProxyImageScript } from './src/cdp-scripts/proxy-image.js';
 import { HAS_VISIBLE_EDITOR_SCRIPT } from './src/cdp-scripts/has-visible-editor.js';
-
-dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -66,6 +67,13 @@ const TUNNEL_ENABLED = process.env.TUNNEL_ENABLED === 'true';
 const TUNNEL_URL = process.env.TUNNEL_URL || '';
 const MAX_UPLOAD_SIZE = 10 * 1024 * 1024; // 10MB
 const DEBUG_MODE = process.env.AG2R_DEBUG === '1';
+
+// === PWA Identity (derived from AG2R_ENV, no hardcoded env names) ===
+const _env = getEnv();
+const appName = _env === 'production' ? 'AG2R' : `AG2R ${_env.charAt(0).toUpperCase() + _env.slice(1)}`;
+const appIconPath = _env !== 'production' && fs.existsSync(path.join(__dirname, 'public', `ag2r-icon-${_env}.png`))
+  ? `/ag2r-icon-${_env}.png`
+  : '/ag2r-icon.png';
 
 // === Multer (file upload) ===
 const upload = multer({
@@ -86,19 +94,15 @@ let lastSnapshotHash = null;
 let pollTimer = null;
 let reconnectTimer = null;
 const wsClients = new Set();
+let visibleClients = 0; // Clients with document.visibilityState === 'visible'
 
 // === Push Notifications ===
 const VAPID_KEYS_PATH = getConfigPath('vapid-keys.json');
 const LEGACY_VAPID_KEYS_PATH = path.join(__dirname, 'vapid-keys.json');
 const PUSH_SUBS_PATH = getConfigPath('push-subscriptions.json');
-const pushSubscriptions = new Map(); // endpoint → PushSubscription
-let lastPermissionState = false; // tracks whether permission banner was showing
-let lastPermissionNotifyTime = 0; // timestamp of last permission push (for cooldown)
-const PERMISSION_COOLDOWN_MS = 2 * 60 * 1000; // 2 min — collapses rapid-fire command sequences
-const notifiedAttentionIds = new Set(); // conversation IDs we've already notified about
-let lastAttentionReminderTime = Date.now(); // for 2-hour reminder reset
-const ATTENTION_REMINDER_INTERVAL_MS = 2 * 60 * 60 * 1000; // 2 hours
-let publicOrigin = ''; // set from subscribe request's origin header
+const pushSubscriptions = new Map(); // endpoint → { ...PushSubscription, origin }
+let lastPushSentAt = 0;
+const PUSH_COOLDOWN_MS = 30_000; // 30 seconds between push notifications
 
 // Load or generate VAPID keys on startup
 function initVapid() {
@@ -150,97 +154,119 @@ function saveSubscriptions() {
 const vapidKeys = initVapid();
 loadSubscriptions();
 
-// Send push notification to all subscribers (production only — dev servers skip)
+// === Push Pause State ===
+const PUSH_PAUSED_PATH = getConfigPath('push-paused.json');
+let pushPaused = false;
+
+function loadPauseState() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(PUSH_PAUSED_PATH, 'utf-8'));
+    pushPaused = !!raw.paused;
+    if (pushPaused) log('Push', 'Notifications are paused');
+  } catch {
+    // No file yet — default to not paused
+  }
+}
+
+function savePauseState() {
+  try {
+    ensureConfigDir();
+    fs.writeFileSync(PUSH_PAUSED_PATH, JSON.stringify({ paused: pushPaused }));
+  } catch (e) {
+    console.debug('[Push] Failed to save pause state:', e.message);
+  }
+}
+
+loadPauseState();
+
+// Send push notification to all subscribers
 async function sendPushToAll(payload) {
-  if (isDev()) return;
-  if (pushSubscriptions.size === 0) return;
-  const body = JSON.stringify(payload);
+  if (pushSubscriptions.size === 0) {
+    log('Push', 'No subscribers — skipping send');
+    return;
+  }
+  log('Push', `Sending to ${pushSubscriptions.size} subscriber(s): ${payload.body}`);
   const stale = [];
+  let sent = 0;
   for (const [endpoint, sub] of pushSubscriptions) {
+    // Resolve notification click URL per-subscription from stored origin
+    const base = sub.origin || TUNNEL_URL || `https://localhost:${PORT}`;
+    const params = new URLSearchParams({ sidebar: 'open' });
+    if (payload.conversationId) params.set('conversationId', payload.conversationId);
+    const url = base + (base.includes('?') ? '&' : '?') + params.toString();
+    const body = JSON.stringify({ ...payload, url, icon: appIconPath });
     try {
       await webpush.sendNotification(sub, body);
+      sent++;
+      log('Push', `✓ Delivered to ${endpoint.substring(0, 60)}...`);
     } catch (err) {
-      if (err.statusCode === 410 || err.statusCode === 404 || err.statusCode === 403) {
+      if (err.statusCode === 410) {
+        // 410 Gone — subscription permanently invalid, safe to remove
         stale.push(endpoint);
+        log('Push', `✗ 410 Gone — removing ${endpoint.substring(0, 60)}...`);
       } else {
-        console.debug(`[Push] Send error: ${err.statusCode || 'N/A'} — ${err.body || err.message}`);
+        // 403/404 can be transient (VAPID rotation, FCM hiccup) — keep subscription
+        log('Push', `✗ ${err.statusCode || 'N/A'} — keeping subscription (${err.body || err.message})`);
       }
     }
   }
   stale.forEach(ep => pushSubscriptions.delete(ep));
   if (stale.length > 0) saveSubscriptions();
-  log('Push', `Sent to ${pushSubscriptions.size} subscriber(s), removed ${stale.length} stale`);
+  log('Push', `Done: ${sent} delivered, ${stale.length} removed`);
 }
 
-// Check attention state and send push notifications
+// Check if any conversation needs attention and send a push notification.
+// Skips when app is in foreground (visibleClients > 0).
+// SW-side dedup (getNotifications) prevents spamming unread notifications.
+// Server-side dedup: tracks notified conversation IDs to avoid re-notifying
+// until the conversation leaves the attention list (user attended to it).
+const notifiedConversations = new Set();
+
+function truncName(name) {
+  return (name || '').trim();
+}
+
 function checkAttentionState(snapshot) {
-  // Notification URL: prefer TUNNEL_URL (stable, configured by user) over
-  // publicOrigin (fragile, lost on server restart, set from last subscribe request).
-  // TUNNEL_URL is used whenever configured — TUNNEL_ENABLED only controls proxy trust.
-  const url = TUNNEL_URL || publicOrigin || `https://localhost:${PORT}`;
-  const sidebarUrl = url + (url.includes('?') ? '&' : '?') + 'sidebar=open';
-  const now = Date.now();
+  if (visibleClients > 0) return; // App is in foreground — no push needed
+  if (pushPaused) return; // User paused notifications
 
-  // 1. Active conversation permission banner
-  const hasPermission = !!snapshot.permissionHtml;
-  if (hasPermission && !lastPermissionState) {
-    if (now - lastPermissionNotifyTime >= PERMISSION_COOLDOWN_MS) {
-      sendPushToAll({
-        title: 'AG2R',
-        body: 'A command needs your approval',
-        url,
-        tag: 'ag2r-permission',
-      });
-      lastPermissionNotifyTime = now;
-      track('push_notification_sent', { reason: 'permission' });
-    } else {
-      console.debug('[Push] Permission notification suppressed (cooldown)');
+  const attentionItems = (snapshot.sidebarAttentionItems || [])
+    .filter(item => item.type !== 'completed');
+
+  // Clear notified IDs that are no longer in attention list (user attended to them)
+  for (const id of notifiedConversations) {
+    if (!attentionItems.some(item => item.id === id)) {
+      notifiedConversations.delete(id);
     }
   }
-  lastPermissionState = hasPermission;
 
-  // 2. Sidebar-based attention detection (covers ALL conversations)
-  // capture.js returns sidebarAttentionItems: [{id, type}] where type is
-  // 'permission' (SVG icon = agent blocked) or 'completed' (just finished).
-  const items = snapshot.sidebarAttentionItems || [];
-  const actionableItems = items.filter(item => item.type !== 'completed');
-  const currentAttentionIds = new Set(actionableItems.map(item => item.id));
-  const userIsActive = wsClients.size > 0;
+  if (attentionItems.length === 0) return;
 
-  // 2a. Remove notified IDs that are no longer needing attention (user attended to them)
-  for (const id of notifiedAttentionIds) {
-    if (!currentAttentionIds.has(id)) notifiedAttentionIds.delete(id);
+  // Find conversations we haven't notified about yet
+  const newItems = attentionItems.filter(item => !notifiedConversations.has(item.id));
+  if (newItems.length > 0) {
+    console.debug('[Push] New attention items:', newItems.map(i => `${i.name}(${i.type})`).join(', '));
   }
+  if (newItems.length === 0) return;
 
-  // 2b. 2-hour reminder: clear notified set so forgotten conversations re-trigger
-  if (now - lastAttentionReminderTime > ATTENTION_REMINDER_INTERVAL_MS) {
-    notifiedAttentionIds.clear();
-    lastAttentionReminderTime = now;
-  }
-
-  // 2c. Find new attention IDs we haven't notified about yet
-  const newIds = [];
-  for (const id of currentAttentionIds) {
-    if (!notifiedAttentionIds.has(id)) newIds.push(id);
-  }
-
-  // 2d. If user is away and there are new actionable items, notify (with cooldown)
-  if (!userIsActive && newIds.length > 0) {
-    if (now - lastPermissionNotifyTime >= PERMISSION_COOLDOWN_MS) {
-      for (const id of newIds) notifiedAttentionIds.add(id);
-      sendPushToAll({
-        title: 'AG2R',
-        body: 'A command needs your approval',
-        url: sidebarUrl,
-        tag: 'ag2r-attention',
-      });
-      lastPermissionNotifyTime = now;
-      track('push_notification_sent', { reason: 'sidebar_attention', newCount: newIds.length });
+  // Send one notification per new conversation (unique tag so they stack)
+  for (const item of newItems) {
+    const name = truncName(item.name);
+    let body;
+    if (item.type === 'question') {
+      body = name ? `Asking question | ${name}` : 'Asking question';
     } else {
-      // Still mark as notified to avoid re-checking on next poll
-      for (const id of newIds) notifiedAttentionIds.add(id);
-      console.debug('[Push] Sidebar attention notification suppressed (cooldown)');
+      body = name ? `Command approval | ${name}` : 'Command approval';
     }
+
+    notifiedConversations.add(item.id);
+    log('Push', `Attention detected — sending for ${name || item.id}`);
+    sendPushToAll({
+      title: appName,
+      body,
+      tag: `ag2r-${item.id}`,
+      conversationId: item.id,
+    });
   }
 }
 
@@ -717,7 +743,10 @@ function fireBurstCaptures(delays) {
             (snapshot.runningTasksHtml || '') +
             (snapshot.scheduledTasksHtml || '') +
             (snapshot.scheduledTasksDialogHtml || '') +
-            (snapshot.subagentInfoHtml || '')
+            (snapshot.subagentInfoHtml || '') +
+            (snapshot.modelName || '') +
+            (snapshot.environmentName || '') +
+            (snapshot.branchName || '')
           );
           if (hash !== lastSnapshotHash) {
             cachedSnapshot = snapshot;
@@ -764,7 +793,10 @@ function startPolling() {
           (snapshot.runningTasksHtml || '') +
           (snapshot.scheduledTasksHtml || '') +
           (snapshot.scheduledTasksDialogHtml || '') +
-          (snapshot.subagentInfoHtml || '')
+          (snapshot.subagentInfoHtml || '') +
+          (snapshot.modelName || '') +
+          (snapshot.environmentName || '') +
+          (snapshot.branchName || '')
         );
 
         // Only broadcast and update cache when content actually changes
@@ -899,6 +931,37 @@ app.use((req, res, next) => {
   return res.status(401).json({ error: 'Unauthorized' });
 });
 
+// --- Dynamic PWA Manifest (varies by AG2R_ENV) ---
+// Served before express.static so it overrides the static manifest.json.
+app.get('/manifest.json', (req, res) => {
+  res.json({
+    name: appName,
+    short_name: appName,
+    description: 'Mobile remote interface for Antigravity AI coding sessions',
+    start_url: '/',
+    display: 'standalone',
+    background_color: '#090e17',
+    theme_color: '#090e17',
+    icons: [{
+      src: appIconPath,
+      sizes: '512x512',
+      type: 'image/png',
+      purpose: 'any maskable',
+    }],
+  });
+});
+
+// --- Dynamic index.html (injects env-specific icon and app name) ---
+// Served before express.static so it overrides the static index.html.
+const indexHtml = fs.readFileSync(path.join(__dirname, 'public', 'index.html'), 'utf-8');
+app.get('/', (req, res) => {
+  const html = indexHtml
+    .replaceAll('/ag2r-icon.png', appIconPath)
+    .replaceAll('<title>AG2R</title>', `<title>${appName}</title>`)
+    .replace('content="AG2R"', `content="${appName}"`);
+  res.type('html').send(html);
+});
+
 // --- Static Files (no cache during development) ---
 app.use(express.static(path.join(__dirname, 'public'), {
   etag: false,
@@ -1029,6 +1092,31 @@ app.post('/expand-left-sidebar', async (req, res) => {
   }
 });
 
+// --- Navigate to Conversation by UUID (from notification click) ---
+app.post('/navigate-conversation', async (req, res) => {
+  const { conversationId } = req.body;
+  if (!conversationId) {
+    return res.status(400).json({ error: 'conversationId is required' });
+  }
+  if (!cdpClient) {
+    return res.status(503).json({ error: 'CDP not connected' });
+  }
+  try {
+    const script = buildClickConversationScript(JSON.stringify(conversationId));
+    const result = await evaluateInBrowser(script);
+    log('NavigateConversation', JSON.stringify(result));
+    res.json(result || { ok: false });
+
+    // Burst re-captures to pick up the conversation switch
+    if (result?.ok) {
+      fireBurstCaptures([300, 600, 1200]);
+    }
+  } catch (e) {
+    console.debug('[NavigateConversation] Error:', e.message);
+    res.json({ ok: false, error: e.message });
+  }
+});
+
 // --- Copy Response (intercept AG's clipboard.writeText, return markdown) ---
 app.post('/copy-response', async (req, res) => {
   track('code_copied');
@@ -1123,7 +1211,11 @@ app.post('/restart-antigravity', async (req, res) => {
     // Wait for process to die, then relaunch
     setTimeout(() => {
       log('Restart', 'Relaunching Antigravity...');
-      exec('open -a Antigravity --args --remote-debugging-port=9000', (err) => {
+      // Launch AG in a fresh login shell so it doesn't inherit AG2R's env vars.
+      // env -i clears all env, then bash -l rebuilds from shell configs (~/.bash_profile, etc.)
+      // — same clean environment as when cron's ag-watchdog.sh starts AG.
+      const home = process.env.HOME || '/Users/' + process.env.USER;
+      exec(`env -i HOME=${home} /bin/bash -l -c 'open -a Antigravity --args --remote-debugging-port=9000'`, (err) => {
         if (err) log('Restart', 'Relaunch error:', err.message);
         else log('Restart', 'Relaunch command sent');
       });
@@ -1284,7 +1376,7 @@ app.post('/click', async (req, res) => {
     // dialog/dropdown DOM appearing (React render takes 50-200ms)
     if (result?.ok) {
       const source = result.source || '';
-      if (['env', 'model', 'project', 'dropdown', 'dialog', 'left'].includes(source)) {
+      if (['chat', 'dropdown', 'dialog', 'left'].includes(source)) {
         // Fire 3 rapid captures at 150ms, 400ms, 700ms
         fireBurstCaptures([150, 400, 700]);
       }
@@ -1501,26 +1593,9 @@ app.post('/push/subscribe', (req, res) => {
   if (!subscription?.endpoint) {
     return res.status(400).json({ error: 'Invalid subscription' });
   }
-  // Dev servers must NOT persist subscriptions — the shared config file is read
-  // by the main server, which would then send duplicate notifications to both
-  // the prod and dev-origin service workers. Accept silently so the client
-  // doesn't error.
-  if (isDev()) {
-    log('Push', 'Dev server — skipping subscription persist');
-    return res.json({ ok: true });
-  }
-  // Reject subscriptions from dev-hub origins to prevent duplicate notifications.
-  // The dev-ag2r PWA has its own service worker + push subscription; if we accept
-  // it, the user gets one notification per origin.
-  const origin = req.get('origin') || req.get('referer') || '';
-  if (/dev-ag2r/i.test(origin)) {
-    log('Push', `Rejected dev-origin subscription (origin: ${origin})`);
-    return res.json({ ok: true });
-  }
-  pushSubscriptions.set(subscription.endpoint, subscription);
+  const origin = (req.get('origin') || req.get('referer') || '').replace(/\/$/, '');
+  pushSubscriptions.set(subscription.endpoint, { ...subscription, origin });
   saveSubscriptions();
-  // Track the public origin for notification click URLs
-  if (origin) publicOrigin = origin.replace(/\/$/, '');
   log('Push', `Subscribed (${pushSubscriptions.size} total) from ${origin}`);
   res.json({ ok: true });
 });
@@ -1533,6 +1608,45 @@ app.post('/push/unsubscribe', (req, res) => {
   }
   log('Push', `Unsubscribed (${pushSubscriptions.size} total)`);
   res.json({ ok: true });
+});
+
+app.post('/push/test', (req, res) => {
+  log('Push', 'Test notification triggered');
+  sendPushToAll({
+    title: appName,
+    body: 'Test notification from AG2R',
+    tag: 'ag2r-test',
+  });
+  res.json({ ok: true, subscribers: pushSubscriptions.size });
+});
+
+app.get('/push/status', (req, res) => {
+  res.json({
+    subscribers: pushSubscriptions.size,
+    endpoints: [...pushSubscriptions.keys()].map(ep => ep.substring(0, 80) + '...'),
+    vapidPublicKey: vapidKeys.publicKey,
+    lastPushSentAt: lastPushSentAt ? new Date(lastPushSentAt).toISOString() : null,
+    cooldownMs: PUSH_COOLDOWN_MS,
+  });
+});
+
+// Push notification state (for bell icon in client)
+app.get('/push/state', (req, res) => {
+  res.json({ paused: pushPaused, subscribers: pushSubscriptions.size });
+});
+
+app.post('/push/pause', (req, res) => {
+  pushPaused = true;
+  savePauseState();
+  log('Push', 'Notifications paused by user');
+  res.json({ ok: true, paused: true });
+});
+
+app.post('/push/resume', (req, res) => {
+  pushPaused = false;
+  savePauseState();
+  log('Push', 'Notifications resumed by user');
+  res.json({ ok: true, paused: false });
 });
 
 // --- Health ---
@@ -1671,12 +1785,26 @@ async function start() {
       }));
     }
 
+    ws.on('message', (raw) => {
+      try {
+        const msg = JSON.parse(raw);
+        if (msg.type === 'visibility') {
+          const wasVisible = ws._visible;
+          ws._visible = !!msg.visible;
+          if (ws._visible && !wasVisible) visibleClients++;
+          if (!ws._visible && wasVisible) visibleClients--;
+        }
+      } catch {}
+    });
+
     ws.on('close', () => {
+      if (ws._visible) visibleClients--;
       wsClients.delete(ws);
       log('WS', `Client disconnected (${wsClients.size} total)`);
     });
 
     ws.on('error', () => {
+      if (ws._visible) visibleClients--;
       wsClients.delete(ws);
     });
   });
@@ -1685,7 +1813,7 @@ async function start() {
   await flagsReady;
 
   server.listen(PORT, () => {
-    log('Server', `AG2R running on https://localhost:${PORT}`);
+    log('Server', `${appName} (env: ${getEnv()}) running on https://localhost:${PORT}`);
     if (TUNNEL_URL) {
       log('Server', `Tunnel URL: ${TUNNEL_URL}`);
     }

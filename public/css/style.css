@@ -92,7 +92,7 @@ body {
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border-subtle);
   flex-shrink: 0;
-  z-index: 300;
+  z-index: 2150;
 }
 
 .header-title {
@@ -101,6 +101,7 @@ body {
   letter-spacing: -0.02em;
   color: var(--text-primary);
   flex: 1;
+  min-width: 0;
 }
 
 .header-icon {
@@ -129,6 +130,11 @@ body {
 .icon-btn:active {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+/* ── Notification Bell ── */
+#notification-bell {
+  position: relative;
 }
 
 /* ── Connection Status Dot ── */
@@ -169,7 +175,7 @@ body {
   height: calc(100dvh - var(--header-height) - var(--safe-top));
   background: var(--bg-panel);
   border-right: 1px solid var(--border-subtle);
-  z-index: 200;
+  z-index: 2150;
   transform: translateX(-100%);
   transition: transform 0.25s ease;
   display: flex;
@@ -190,7 +196,7 @@ body {
   height: calc(100dvh - var(--header-height) - var(--safe-top));
   background: var(--bg-panel);
   border-left: 1px solid var(--border-subtle);
-  z-index: 200;
+  z-index: 2148;
   transform: translateX(100%);
   transition: transform 0.25s ease;
   display: flex;
@@ -249,11 +255,20 @@ body {
 .sidebar-overlay {
   position: fixed;
   inset: 0;
-  z-index: 199;
   background: rgba(0, 0, 0, 0.5);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.25s ease;
+}
+
+/* Left overlay sits just below the left sidebar (2150) */
+#left-sidebar-overlay {
+  z-index: 2149;
+}
+
+/* Right overlay sits just below the right sidebar (2148) */
+#right-sidebar-overlay {
+  z-index: 2147;
 }
 
 .sidebar-overlay.visible {
@@ -292,8 +307,7 @@ body {
    To re-enable: comment out or remove the rules below.
    See ONBOARDING.md gotcha: "Sidebar hidden elements" */
 
-/* Task 1: Hide top 2 action buttons (New Conversation, History) — Scheduled Tasks is visible */
-[data-ag-click-label="New Conversation"],
+/* Task 1: Hide History button — New Conversation and Scheduled Tasks stay visible */
 [data-ag-click-label="Conversation History"] {
   display: none !important;
 }
@@ -418,6 +432,8 @@ body {
 
 .chat-content {
   padding: 12px 16px 12px;
+  max-width: max(30vw, 40rem);
+  margin: 0 auto;
 }
 
 /* ── Empty State ── */
@@ -1302,71 +1318,31 @@ body {
   color: var(--green);
 }
 
-/* ── New Session Page ── */
-.ag2r-new-session {
+/* ── New Session Page — captured content zone ── */
+/* AG's new session DOM rendered directly via bridge approach */
+.ag2r-ns-captured {
+  padding: 16px;
+}
+
+/* Hide AG's non-functional contenteditable input (it's a DOM clone) */
+.ag2r-ns-captured [data-ag-inert] {
+  display: none !important;
+}
+
+/* Ensure captured buttons are tappable on mobile */
+.ag2r-ns-captured button,
+.ag2r-ns-captured [role="button"] {
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* ── New Session — AG2R input (injected into AG's captured card) ── */
+.ag2r-ns-input-wrapper {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  min-height: 60vh;
-  padding: 24px 16px;
-  gap: 20px;
 }
 
-.ag2r-new-session-header {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-}
-
-.ag2r-new-session-project {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 14px;
-  border-radius: 20px;
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-  font-size: 14px;
-  font-weight: 500;
-}
-
-.ag2r-new-session-project svg {
-  opacity: 0.7;
-}
-
-
-.ag2r-new-session-form {
-  display: flex;
-  flex-direction: column;
-  width: 100%;
-  max-width: 500px;
-  position: relative;
-  border-radius: 16px;
-  border: 1px solid rgba(255, 255, 255, 0.05);
-  background: color-mix(in srgb, #ffffff 5%, #101010);
-  overflow: hidden;
-}
-
-/* When env bar present, form becomes the outer card */
-.ag2r-new-session-form.has-env-bar {
-  background: #252525;
-  border: none;
-  padding: 1px;
-  overflow: visible;
-}
-
-/* Inner card wrapping textarea + controls */
-.ag2r-new-session-inner {
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-input);
-  border-radius: calc(16px - 1px);
-  overflow: hidden;
-}
-
-.ag2r-new-session-form textarea {
+.ag2r-ns-input-wrapper textarea {
   width: 100%;
   min-height: 80px;
   max-height: 200px;
@@ -1379,37 +1355,31 @@ body {
   resize: vertical;
   outline: none;
   line-height: 1.5;
+  box-sizing: border-box;
 }
 
-.ag2r-new-session-form textarea:focus {
-  outline: none;
-}
-
-.ag2r-new-session-form textarea::placeholder {
+.ag2r-ns-input-wrapper textarea::placeholder {
   color: var(--text-muted);
 }
 
-.ag2r-new-session-controls {
+.ag2r-ns-toolbar-actions {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 6px 10px;
+  gap: 6px;
 }
 
-.ag2r-new-session-left,
-.ag2r-new-session-right {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+.ag2r-ns-toolbar-actions .mic-btn {
+  width: 28px;
+  height: 28px;
 }
 
-.ag2r-new-session-left {
-  position: relative;
+.ag2r-ns-toolbar-actions .mic-btn .mic-icon {
+  font-size: 18px;
 }
 
-.ag2r-new-session-form button[type="submit"] {
-  width: 36px;
-  height: 36px;
+#ag2r-new-session-send {
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   border: none;
   background: var(--accent);
@@ -1421,56 +1391,22 @@ body {
   transition: opacity 0.15s, transform 0.15s;
 }
 
-.ag2r-new-session-form button[type="submit"]:active {
+#ag2r-new-session-send:active {
   transform: scale(0.92);
 }
 
-.ag2r-new-session-form button[type="submit"]:disabled {
+#ag2r-new-session-send:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
 
-.ag2r-new-session-form button[type="submit"].sending {
+#ag2r-new-session-send.sending {
   animation: pulse 1s infinite;
 }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.5; }
-}
-
-/* ── New Session — Environment/Branch Settings Bar ── */
-.ag2r-new-session-env-bar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 6px 12px;
-}
-
-.ag2r-env-chip {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 8px;
-  border-radius: 8px;
-  border: none;
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 12px;
-  font-family: var(--font-sans);
-  cursor: pointer;
-  transition: color 0.15s, background 0.15s;
-  white-space: nowrap;
-}
-
-.ag2r-env-chip:active {
-  background: var(--bg-hover);
-  color: var(--text-primary);
-}
-
-.ag2r-env-chip .material-symbols-rounded {
-  opacity: 0.8;
 }
 
 /* ── Dropdown Overlay (AG portal menus) ── */
@@ -1613,7 +1549,7 @@ body {
   display: flex;
   align-items: flex-end;
   justify-content: center;
-  padding-bottom: env(safe-area-inset-bottom, 0);
+  padding: 0 12px env(safe-area-inset-bottom, 0);
 }
 
 .permission-overlay.hidden {
@@ -1632,7 +1568,7 @@ body {
   background: var(--bg-app, #0e1318);
   border: 1px solid var(--border);
   border-radius: 16px 16px 0 0;
-  padding: 20px 16px;
+  padding: 20px 20px;
   width: 100%;
   max-width: 480px;
   max-height: 80vh;
@@ -1640,6 +1576,32 @@ body {
   overflow-y: auto;
   -webkit-overflow-scrolling: touch;
   animation: slideUpDropdown 250ms ease-out;
+}
+
+/* ── Native AG Permission (rendered with AG's CSS) ── */
+.permission-content:has(.ag2r-permission-native) {
+  padding: 16px;
+  border: none;
+}
+
+.ag2r-permission-native {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  font-size: 14px;
+}
+
+/* Constrain AG's max-width containers to fit mobile viewport */
+.ag2r-permission-native [style*="max-width"] {
+  max-width: 100% !important;
+  box-sizing: border-box;
+}
+
+/* Ensure long text wraps properly */
+.ag2r-permission-native * {
+  overflow-wrap: break-word;
+  word-break: break-word;
 }
 
 .permission-header {
@@ -1761,8 +1723,8 @@ body {
 .permission-actions {
   position: sticky;
   bottom: -20px;
-  margin: 0 -16px -20px;
-  padding: 12px 16px 20px;
+  margin: 0 -20px -20px;
+  padding: 12px 20px 20px;
   background: var(--bg-app, #0e1318);
   display: flex;
   gap: 8px;
@@ -2206,7 +2168,7 @@ body {
 
 .comment-fab {
   position: fixed;
-  z-index: 1500;
+  z-index: 2200;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -2230,7 +2192,7 @@ body {
 .comment-modal {
   position: fixed;
   inset: 0;
-  z-index: 2000;
+  z-index: 2300;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2328,7 +2290,7 @@ body {
   bottom: 80px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 1000;
+  z-index: 2200;
   background: #6366f1;
   color: #fff;
   font-size: 12px;

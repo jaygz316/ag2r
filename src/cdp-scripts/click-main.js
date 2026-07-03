@@ -1,7 +1,7 @@
 // CDP script: main click dispatcher for all source types
 // Extracted from server.js POST /click (general handler)
 // This is the largest inline script — handles chat, left, right, dropdown,
-// dialog, settings, perm, env, model, project, task sources.
+// dialog, settings, perm, task sources.
 
 export function buildMainClickScript(safeClickId, safeLabel) {
   return `
@@ -24,6 +24,22 @@ export function buildMainClickScript(safeClickId, safeLabel) {
           document.getElementById('conversation') ||
           document.getElementById('chat') ||
           document.getElementById('cascade');
+
+        // New session page fallback: scroll container is zero-height or missing.
+        // Walk up from inputBox to animate-fade-in root (mirrors capture.js detection).
+        if (!root || root.clientHeight === 0) {
+          const inputBox = document.getElementById('antigravity.agentSidePanelInputBox');
+          if (inputBox) {
+            let newRoot = inputBox;
+            for (let i = 0; i < 10; i++) {
+              if (!newRoot.parentElement) break;
+              newRoot = newRoot.parentElement;
+              const cls = newRoot.className?.toString() || '';
+              if (cls.includes('animate-fade-in')) break;
+            }
+            root = newRoot;
+          }
+        }
       } else if (source === 'left') {
         root = document.querySelector('.bg-sidebar');
       } else if (source === 'right') {
@@ -92,40 +108,6 @@ export function buildMainClickScript(safeClickId, safeLabel) {
           return { ok: false, reason: 'perm_index_out_of_range', total: permEls.length };
         }
         return { ok: false, reason: 'no_permission_banner' };
-      } else if (source === 'env') {
-        // Environment/branch buttons on new session page bottom bar
-        const selectors = [
-          '[aria-label="Select Environment"]',   // env:0
-          '[aria-label="Select Default Branch"]', // env:1
-        ];
-        if (idx >= 0 && idx < selectors.length) {
-          const target = document.querySelector(selectors[idx]);
-          if (target) {
-            const actualLabel = (target.textContent || '').trim().substring(0, 50);
-            target.click();
-            return { ok: true, label: actualLabel, source: 'env' };
-          }
-          return { ok: false, reason: 'env_button_not_found', idx };
-        }
-        return { ok: false, reason: 'env_index_out_of_range' };
-      } else if (source === 'model') {
-        // Model selector button — opens AG's model picker dialog
-        const target = document.querySelector('[aria-label*="Select model"]');
-        if (target) {
-          const actualLabel = (target.textContent || '').trim().substring(0, 50);
-          target.click();
-          return { ok: true, label: actualLabel, source: 'model' };
-        }
-        return { ok: false, reason: 'model_button_not_found' };
-      } else if (source === 'project') {
-        // Project dropdown button — opens AG's project picker dialog
-        const target = document.querySelector('[aria-haspopup="dialog"]');
-        if (target) {
-          const actualLabel = (target.textContent || '').trim().substring(0, 50);
-          target.click();
-          return { ok: true, label: actualLabel, source: 'project' };
-        }
-        return { ok: false, reason: 'project_button_not_found' };
       } else if (source === 'task') {
         // Running tasks: find task section and click the Nth button
         const inputBox = document.getElementById('antigravity.agentSidePanelInputBox');
@@ -158,7 +140,7 @@ export function buildMainClickScript(safeClickId, safeLabel) {
           }
         }
         if (infoPanel) {
-          const btns = infoPanel.querySelectorAll('button, a, [role="button"]');
+          const btns = infoPanel.querySelectorAll('button, a, [role="button"], [role="option"], [role="menuitem"], [role="menuitemradio"]');
           if (idx >= 0 && idx < btns.length) {
             const target = btns[idx];
             const actualLabel = (target.textContent || '').trim().substring(0, 80);
@@ -179,7 +161,7 @@ export function buildMainClickScript(safeClickId, safeLabel) {
       // includeCursorPointer=false.
       if (source === 'settings') {
         let sIdx = 0;
-        root.querySelectorAll('button, a, [role="button"]').forEach(el => {
+        root.querySelectorAll('button, a, [role="button"], [role="option"], [role="menuitem"], [role="menuitemradio"]').forEach(el => {
           el.setAttribute('data-ag-click-id', 'settings:' + sIdx);
           sIdx++;
         });
@@ -198,7 +180,7 @@ export function buildMainClickScript(safeClickId, safeLabel) {
       const maxLen = (source === 'chat') ? 80 : 0;
       const visible = [];
       // Semantic interactive elements — always include, no text-length filter
-      root.querySelectorAll('button, a, [role="button"]').forEach(el => {
+      root.querySelectorAll('button, a, [role="button"], [role="option"], [role="menuitem"], [role="menuitemradio"]').forEach(el => {
         if (skipVis || el.offsetParent !== null) {
           visible.push(el);
         }
