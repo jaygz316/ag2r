@@ -190,14 +190,36 @@ export const CAPTURE_SCRIPT = `
               seenIds.add(id);
               // Classify attention type by checking for SVG icon near the ping.
               // The ping lives inside a status container (group-hover:invisible div).
-              // If that container has an SVG, the agent needs intervention.
+              // AG uses Lucide SVG icons to indicate why the agent is blocked:
+              //   - lucide-terminal* → command needs approval
+              //   - lucide-message* → agent has a question
+              //   - other SVG       → generic attention (fallback)
+              //   - no SVG          → agent just finished (completed)
               let statusContainer = ping;
               for (let j = 0; j < 5 && statusContainer; j++) {
                 if ((statusContainer.getAttribute('class') || '').includes('group-hover:invisible')) break;
                 statusContainer = statusContainer.parentElement;
               }
-              const hasSvgIcon = statusContainer ? !!statusContainer.querySelector('svg') : false;
-              sidebarAttentionItems.push({ id, type: hasSvgIcon ? 'permission' : 'completed' });
+              const svgEl = statusContainer ? statusContainer.querySelector('svg') : null;
+              let type = 'completed';
+              if (svgEl) {
+                // Positively identify the question icon by its Material Symbols path data.
+                // Everything else with an SVG defaults to command.
+                const pathD = (svgEl.querySelector('path')?.getAttribute('d') || '');
+                const QUESTION_ICON_PATH = 'M477.92-295.77q17.15,0 28.96-11.81t11.81-28.96T506.88-365.5t-28.96-11.81T448.96-365.5t-11.81,28.96t11.81,28.96t28.96,11.81ZM449.62-439h56.31q0.38-15.08 2.08-25.92T514.69-486t12.69-19.73t20.54-22.35q31.92-31.92 45.65-54.27t13.73-50.81q0-49.92-34.08-80.5t-87.77-30.58q-48.85,0-83.5,24.88t-49.27,64.81l51.38,20.61q8.54-25.46 28.38-41.58t49.77-16.12q32.39,0 50.58,17.58T551-631.31q0,18.54-11,36.38t-33.92,38.54q-15.85,14-26.35,27.12t-17.5,26.96t-9.81,28.81T449.62-439ZM480-68.46L368.46-180H212.31Q182-180 161-201t-21-51.31V-787.69Q140-818 161-839t51.31-21H747.69Q778-860 799-839t21,51.31v535.38Q820-222 799-201t-51.31,21H591.54L480-68.46ZM212.31-240H392.77L480-152.77L567.23-240H747.69q5.39,0 8.85-3.46t3.46-8.85V-787.69q0-5.39-3.46-8.85T747.69-800H212.31q-5.39,0-8.85,3.46T200-787.69v535.38q0,5.39 3.46,8.85t8.85,3.46ZM480-520Z';
+                type = (pathD === QUESTION_ICON_PATH) ? 'question' : 'command';
+              }
+              // Extract conversation name from the sidebar item text
+              let name = '';
+              let nameEl = ping;
+              for (let k = 0; k < 10 && nameEl; k++) {
+                if (nameEl.getAttribute('role') === 'button') {
+                  name = (nameEl.textContent || '').trim();
+                  break;
+                }
+                nameEl = nameEl.parentElement;
+              }
+              sidebarAttentionItems.push({ id, type, name });
             }
             break;
           }
@@ -240,37 +262,48 @@ export const CAPTURE_SCRIPT = `
   let dialogHtml = null;
   try {
     for (const child of document.body.children) {
-      if (child.id || child.tagName === 'SCRIPT' || child.tagName === 'STYLE') continue;
+      if (child.tagName === 'SCRIPT' || child.tagName === 'STYLE') continue;
       const text = child.textContent.trim();
       if (!text) continue;
 
-      // Dropdown menu (role="listbox")
-      if (!dropdownHtml && child.getAttribute('role') === 'listbox') {
-        const tagged = tagInteractives(child, 'dropdown', true, false);
-        const clone = child.cloneNode(true);
-        untagAll(tagged);
-        dropdownHtml = clone.outerHTML;
-      }
+      // The target element for portal detection: either the child itself,
+      // or a nested portal inside an ID-wrapped Radix container (div#radix-:rXX:).
+      // Radix wraps portals in ID'd divs — we need to look inside them.
+      const targets = child.id
+        ? Array.from(child.querySelectorAll('[role="dialog"], [role="listbox"]'))
+        : [child];
 
-      // Dialog/modal (fixed overlay with buttons)
-      const cls = child.className || '';
-      if (!dialogHtml && cls.includes('fixed') && cls.includes('inset-0')) {
-        const tagged = tagInteractives(child, 'dialog', true, false);
-        const clone = child.cloneNode(true);
-        untagAll(tagged);
-        clone.querySelectorAll('style').forEach(s => s.remove());
-        dialogHtml = clone.outerHTML;
-      }
+      for (const target of targets) {
+        // Dropdown menu (role="listbox")
+        if (!dropdownHtml && target.getAttribute('role') === 'listbox') {
+          const tagged = tagInteractives(target, 'dropdown', true, false);
+          const clone = target.cloneNode(true);
+          untagAll(tagged);
+          dropdownHtml = clone.outerHTML;
+        }
 
-      // Popover dialog (role="dialog" portal, e.g. environment selector, context menus)
-      if (!dialogHtml && child.getAttribute('role') === 'dialog') {
-        const tagged = tagInteractives(child, 'dialog', true, false);
-        const clone = child.cloneNode(true);
-        untagAll(tagged);
-        clone.querySelectorAll('style').forEach(s => s.remove());
-        dialogHtml = clone.outerHTML;
+        // Dialog/modal (fixed overlay with buttons)
+        const cls = (target.className || '').toString();
+        if (!dialogHtml && cls.includes('fixed') && cls.includes('inset-0')) {
+          const tagged = tagInteractives(target, 'dialog', true, false);
+          const clone = target.cloneNode(true);
+          untagAll(tagged);
+          clone.querySelectorAll('style').forEach(s => s.remove());
+          dialogHtml = clone.outerHTML;
+        }
+
+        // Popover dialog (role="dialog" portal, e.g. environment selector, context menus)
+        if (!dialogHtml && target.getAttribute('role') === 'dialog') {
+          const tagged = tagInteractives(target, 'dialog', true, false);
+          const clone = target.cloneNode(true);
+          untagAll(tagged);
+          clone.querySelectorAll('style').forEach(s => s.remove());
+          dialogHtml = clone.outerHTML;
+        }
       }
     }
+
+
   } catch (e) {
     console.debug('[AG2R] Portal capture error:', e.message);
   }
@@ -317,11 +350,64 @@ export const CAPTURE_SCRIPT = `
     console.debug('[AG2R] Active tab detection error:', e.message);
   }
 
-  // -- 10. Detect and capture permission/approval banner --
+  // -- 10. Detect and capture ask_question modal --
+  // The ask_question widget is rendered inline in the chat (inside #root) as a card
+  // with a radiogroup + Submit/Skip buttons. It has no role="dialog" or fixed overlay.
+  // Detect via Submit+Skip buttons and walk up to the card wrapper.
+  let askQuestionHtml = null;
+  let askQuestionContainer = null; // Used to guard permission capture below
+  try {
+    const allBtns = Array.from(document.querySelectorAll('button'));
+    const skipBtn = allBtns.find(b => b.textContent.trim() === 'Skip');
+    const submitBtn = allBtns.find(b => /^Submit/.test(b.textContent.trim()));
+    if (skipBtn && submitBtn) {
+      // Walk up from Skip button to find the container that also has Submit
+      let container = skipBtn;
+      for (let i = 0; i < 20 && container.parentElement; i++) {
+        container = container.parentElement;
+        if (container.contains(submitBtn)) break;
+      }
+      // Walk up to the card border wrapper (rounded-2xl bg-card-border)
+      let cardRoot = container;
+      for (let i = 0; i < 5 && cardRoot.parentElement; i++) {
+        const cls = (cardRoot.className || '').toString();
+        if (cls.includes('bg-card-border')) break;
+        cardRoot = cardRoot.parentElement;
+      }
+      askQuestionContainer = cardRoot;
+      // Tag interactive elements: radio/checkbox labels and buttons
+      let askIdx = 0;
+      const askTagged = [];
+      cardRoot.querySelectorAll('[role="radiogroup"] label, [role="group"] label').forEach(el => {
+        el.setAttribute('data-ag-click-id', 'ask:' + askIdx);
+        el.setAttribute('data-ag-click-label', (el.textContent || '').trim().substring(0, 50));
+        askIdx++;
+        askTagged.push(el);
+      });
+      cardRoot.querySelectorAll('button').forEach(el => {
+        el.setAttribute('data-ag-click-id', 'ask:' + askIdx);
+        el.setAttribute('data-ag-click-label', (el.textContent || '').trim().substring(0, 50));
+        askIdx++;
+        askTagged.push(el);
+      });
+      const askClone = cardRoot.cloneNode(true);
+      askTagged.forEach(el => {
+        el.removeAttribute('data-ag-click-id');
+        el.removeAttribute('data-ag-click-label');
+      });
+      askClone.querySelectorAll('style').forEach(s => s.remove());
+      askQuestionHtml = askClone.outerHTML;
+    }
+  } catch (e) {
+    console.debug('[AG2R] Ask question capture error:', e.message);
+  }
+
+  // -- 11. Detect and capture permission/approval banner --
   let permissionHtml = null;
   try {
     const radioGroup = document.querySelector('[role="radiogroup"]');
-    if (radioGroup) {
+    // Guard: skip if the radiogroup belongs to an ask_question widget (already captured above)
+    if (radioGroup && !(askQuestionContainer && askQuestionContainer.contains(radioGroup))) {
       // Walk up to find the full banner container
       let banner = radioGroup;
       for (let i = 0; i < 10; i++) {
@@ -355,7 +441,7 @@ export const CAPTURE_SCRIPT = `
     console.debug('[AG2R] Permission banner capture error:', e.message);
   }
 
-  // -- 11. Extract environment/worktree and branch from new session bottom bar --
+  // -- 12. Extract environment/worktree and branch from new session bottom bar --
   // The environment button (aria-label="Select Environment") shows "Local" or "New Worktree" or a worktree name.
   // The branch button (aria-label="Select Default Branch") shows the branch name and only appears in worktree mode.
   let environmentName = null;
@@ -375,7 +461,7 @@ export const CAPTURE_SCRIPT = `
     console.debug('[AG2R] Environment/branch extraction error:', e.message);
   }
 
-  // -- 12. Extract model name from model selector button --
+  // -- 13. Extract model name from model selector button --
   let modelName = null;
   try {
     const modelBtn = document.querySelector('[aria-label*="Select model"]');
@@ -387,9 +473,9 @@ export const CAPTURE_SCRIPT = `
     console.debug('[AG2R] Model name extraction error:', e.message);
   }
 
-  // -- 13. Detect subagent view --
+  // -- 14. Detect subagent view --
   // Two independent signals, both required to confirm subagent view:
-  // -- 13a. Subagent view detection --
+  // -- 14a. Subagent view detection --
   // Two independent heuristics:
   //   1. isInputBoxHidden: AG's input box is missing or invisible → hide AG2R's text box
   //   2. isSubagentView: "Cannot send" text found → show yellow border + subagent banner
@@ -448,7 +534,7 @@ export const CAPTURE_SCRIPT = `
     console.debug('[AG2R] Subagent detection error:', e.message);
   }
 
-  // -- 13b. Capture subagent info panel --
+  // -- 14b. Capture subagent info panel --
   // When in subagent view, AG renders a "cannot prompt subagents" message and
   // "Open overview" button somewhere in the page. Search for it and capture.
   let subagentInfoHtml = null;
@@ -489,6 +575,6 @@ export const CAPTURE_SCRIPT = `
     }
   }
 
-  return { html, css, agentRunning, scrollInfo, leftSidebarHtml, sidebarAttentionItems, sidebarSignature, isSidebarOpen, isNewSessionPage, isInputBoxHidden, isSubagentView, parentConversationName, subagentInfoHtml, dropdownHtml, dialogHtml, settingsHtml, activeArtifactUri, activeFileUri, permissionHtml, environmentName, branchName, modelName };
+  return { html, css, agentRunning, scrollInfo, leftSidebarHtml, sidebarAttentionItems, sidebarSignature, isSidebarOpen, isNewSessionPage, isInputBoxHidden, isSubagentView, parentConversationName, subagentInfoHtml, dropdownHtml, dialogHtml, settingsHtml, activeArtifactUri, activeFileUri, askQuestionHtml, permissionHtml, environmentName, branchName, modelName };
 })()
 `;
