@@ -31,14 +31,14 @@ export const SCHEDULED_TASKS_SCRIPT = `
   // Tag interactive elements on the page
   let idx = 0;
   const tagged = [];
-  inner.querySelectorAll('button, a, [role="button"], input, select, textarea').forEach(el => {
+  inner.querySelectorAll('button, a, [role="button"], [role="combobox"], [role="switch"], input, select, textarea').forEach(el => {
     el.setAttribute('data-ag-click-id', 'sched:' + idx);
     el.setAttribute('data-ag-click-label', (el.textContent || el.getAttribute('placeholder') || '').trim().substring(0, 50));
     idx++;
     tagged.push(el);
   });
   // Also tag cursor-pointer divs (task cards are DIVs, not buttons)
-  inner.querySelectorAll('[class*="cursor-pointer"]').forEach(el => {
+  inner.querySelectorAll('[class*="cursor-pointer"], [aria-haspopup], [aria-expanded]').forEach(el => {
     if (el.hasAttribute('data-ag-click-id')) return; // Already tagged
     const text = (el.textContent || '').trim();
     // Skip very long text containers (likely not interactive cards)

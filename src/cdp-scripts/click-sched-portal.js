@@ -5,12 +5,16 @@ export function buildSchedPortalClickScript(optIdx) {
   return `
         (() => {
           for (const child of document.body.children) {
-            if (child.id || child.tagName === 'SCRIPT' || child.tagName === 'STYLE') continue;
+            // Skip scripts, styles, and well-known app container IDs
+            if (child.tagName === 'SCRIPT' || child.tagName === 'STYLE') continue;
+            const cid = child.id || '';
+            if (cid === 'app' || cid === 'root' || cid === '__next') continue;
             if (child.getBoundingClientRect().width <= 0) continue;
             // Match listbox (schedule dropdowns) or popover/menu (kebab context menus)
             const role = child.getAttribute('role');
             const hasSide = child.hasAttribute('data-side') || child.querySelector('[data-side]');
-            const isPortal = role === 'listbox' || role === 'dialog' || role === 'menu' || hasSide;
+            const hasListbox = role === 'listbox' || !!child.querySelector('[role="listbox"]');
+            const isPortal = role === 'dialog' || role === 'menu' || hasSide || hasListbox;
             const hasButtons = child.querySelectorAll('button, [role="menuitem"], [role="option"]').length > 0;
             if (!isPortal && !hasButtons) continue;
 
