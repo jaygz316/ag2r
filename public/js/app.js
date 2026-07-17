@@ -2023,7 +2023,11 @@ function addClickProxyHandlers(container) {
 
     // Skip proxy wiring for TEXTAREA — they need native focus/input behavior.
     // Permission submit handler reads their value separately.
-    if (tag === 'TEXTAREA') return;
+    // Exception: sched:/scheddlg: tagged textareas (e.g. prompt field on scheduled task
+    // detail page) need the click handler to open the local text input modal.
+    const clickIdPreview = el.dataset.agClickId || '';
+    const isSchedTextarea = tag === 'TEXTAREA' && (clickIdPreview.startsWith('sched:') || clickIdPreview.startsWith('scheddlg:'));
+    if (tag === 'TEXTAREA' && !isSchedTextarea) return;
 
     // Prevent keyboard dismissal: stop mousedown from stealing focus.
     // But allow textareas to receive focus (e.g. permission write-in) —
@@ -2164,6 +2168,20 @@ function addClickProxyHandlers(container) {
       if (clickId.startsWith('chat:') || clickId.startsWith('dialog:') || clickId.startsWith('subinfo:')) {
         setTimeout(loadSnapshot, 300);
         setTimeout(loadSnapshot, 800);
+      }
+
+      // After scheddlg:N (N<100) clicks — dialog buttons like the schedule time dropdown —
+      // fire burst refreshes so the portal listbox gets captured and shown quickly.
+      if (clickId.startsWith('scheddlg:') && parseInt(clickId.split(':')[1], 10) < 100) {
+        setTimeout(loadSnapshot, 150);
+        setTimeout(loadSnapshot, 400);
+        setTimeout(loadSnapshot, 750);
+      }
+
+      // After sched:N clicks (scheduled task page buttons/dropdowns), also fire burst refreshes.
+      if (clickId.startsWith('sched:')) {
+        setTimeout(loadSnapshot, 150);
+        setTimeout(loadSnapshot, 400);
       }
 
       // Re-fetch right sidebar after right-sidebar clicks (tab switches, etc.)

@@ -666,6 +666,14 @@ async function captureSnapshot() {
         } catch (e) {
           console.debug('[Snapshot] Scheduled tasks dropdown eval failed:', e.message);
         }
+        // Fallback: listbox portal may be in a different context than the preferred one
+        if (!result.dropdownHtml) {
+          try {
+            result.dropdownHtml = await evaluateAcrossContexts(buildCaptureListboxScript());
+          } catch (e) {
+            console.debug('[Snapshot] Scheduled tasks dropdown across-contexts eval failed:', e.message);
+          }
+        }
       }
 
       // Capture kebab context menus (popover/dialog portals) from the isolated context.
@@ -1373,7 +1381,7 @@ app.post('/click', async (req, res) => {
     // Scheduled Tasks page clicks need evaluateAcrossContexts (isolated context)
     if (String(clickId).startsWith('sched:')) {
       const schedIdx = parseInt(String(clickId).split(':')[1], 10);
-      const schedClickScript = buildSchedClickScript(schedIdx);
+      const schedClickScript = buildSchedClickScript(schedIdx, JSON.stringify(label || ''));
       const result = await evaluateAcrossContexts(schedClickScript);
       log('Click', `Sched result: ${JSON.stringify(result)}`);
       res.json(result || { ok: false, reason: 'null_result' });

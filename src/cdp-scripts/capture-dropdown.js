@@ -35,7 +35,11 @@ export function buildCaptureKebabMenuScript() {
   return `
             (() => {
               for (const child of document.body.children) {
-                if (child.id || child.tagName === 'SCRIPT' || child.tagName === 'STYLE') continue;
+                // Skip non-element nodes, scripts, and styles
+                if (child.tagName === 'SCRIPT' || child.tagName === 'STYLE') continue;
+                // Skip main app containers by well-known IDs (not Radix portal auto-IDs like "radix-:r0:")
+                const cid = child.id || '';
+                if (cid === 'app' || cid === 'root' || cid === '__next') continue;
                 const text = child.textContent.trim();
                 if (!text || text.length > 500) continue;
                 // Match popover/context menu patterns:
